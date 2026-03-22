@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 import subprocess
 import threading
 import requests
@@ -503,6 +504,21 @@ def format_model(model_str):
     return {"providerID": "minimax", "modelID": model_str}
 
 
+def build_session_url(session_id, working_dir=None):
+    if not session_id:
+        return None
+    if working_dir:
+        encoded_path = (
+            base64.b64encode(working_dir.encode())
+            .decode()
+            .replace("+", "-")
+            .replace("/", "_")
+            .rstrip("=")
+        )
+        return f"http://127.0.0.1:{OPENCODE_PORT}/{encoded_path}/session/{session_id}"
+    return f"http://127.0.0.1:{OPENCODE_PORT}/session/{session_id}"
+
+
 @app.route("/opencode/health")
 def opencode_health():
     try:
@@ -672,6 +688,8 @@ def create_task():
         "source": data.get("source", "manual"),
         "jira_ticket": data.get("jira_ticket", ""),
         "created_at": datetime.now().isoformat(),
+        "status": "Working",
+        "session_id": None,
     }
 
     tasks.append(new_task)
@@ -819,6 +837,7 @@ def execute_task_via_api(task_id, task, saved_config):
     description = task.get("description", "")
     agent = task.get("agent", "")
     model_str = saved_config.get("opencode_model", "minimax/MiniMax-M2.7-highspeed")
+    working_dir = saved_config.get("opencode_working_folder", "")
 
     if not description:
         return jsonify({"error": "Task has no description"}), 400
@@ -881,11 +900,21 @@ def execute_task_via_api(task_id, task, saved_config):
             else:
                 f.write(f"[{datetime.now().isoformat()}] Error: {send_response.text}\n")
 
+        tasks = load_tasks()
+        for t in tasks:
+            if t["id"] == task_id:
+                t["session_id"] = opencode_session_id
+                if send_response.status_code == 200:
+                    t["status"] = "Done"
+                break
+        save_tasks(tasks)
+
         if send_response.status_code == 200:
             return jsonify(
                 {
                     "success": True,
                     "session_id": opencode_session_id,
+                    "session_url": build_session_url(opencode_session_id, working_dir),
                     "response": send_response.json(),
                     "log_file": log_file,
                 }
@@ -919,6 +948,69 @@ def get_task_logs(task_id):
         return jsonify({"logs": content})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/tasks/<task_id>/status", methods=["GET"])
+def get_task_status(task_id):
+    tasks = load_tasks()
+    task = next((t for t in tasks if t["id"] == task_id), None)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    session_id = task.get("session_id")
+    status = task.get("status", "Working")
+
+    saved_config = load_config()
+    working_dir = saved_config.get("opencode_working_folder", "")
+
+    session_info = None
+    if session_id:
+        try:
+            auth = get_opencode_auth()
+            response = requests.get(
+                f"{OPENCODE_SERVER_URL}/session/{session_id}",
+                auth=auth if auth else None,
+                timeout=5,
+            )
+            if response.status_code == 200:
+                session_info = response.json()
+        except Exception:
+            pass
+
+    return jsonify(
+        {
+            "task_id": task_id,
+            "status": status,
+            "session_id": session_id,
+            "session_url": build_session_url(session_id, working_dir)
+            if session_id
+            else None,
+            "session_info": session_info,
+        }
+    )
+
+
+@app.route("/tasks/<task_id>/status", methods=["PATCH"])
+def update_task_status(task_id):
+    data = request.get_json()
+    if not data or "status" not in data:
+        return jsonify({"error": "status is required"}), 400
+
+    tasks = load_tasks()
+    task = next((t for t in tasks if t["id"] == task_id), None)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    valid_statuses = ["Working", "Creating Pull Request", "Updating Jira", "Done"]
+    if data["status"] not in valid_statuses:
+        return jsonify(
+            {"error": f"Invalid status. Must be one of: {valid_statuses}"}
+        ), 400
+
+    task["status"] = data["status"]
+    save_tasks(tasks)
+
+    return jsonify({"success": True, "status": task["status"]})
 
 
 if __name__ == "__main__":

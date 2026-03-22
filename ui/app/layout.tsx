@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Navigation } from "@/components/navigation";
+import { ConfigurationProvider } from "@/lib/configuration-context";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -27,7 +28,9 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning style={{ colorScheme: "light", backgroundColor: "white" }}>
       <body className="min-h-full flex flex-col" style={{ backgroundColor: "white", color: "black" }}>
         <Navigation />
-        <main className="flex-1">{children}</main>
+        <main className="flex-1">
+          <ConfigurationProvider>{children}</ConfigurationProvider>
+        </main>
       </body>
     </html>
   );

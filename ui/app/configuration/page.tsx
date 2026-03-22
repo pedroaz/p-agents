@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/pixelact-ui/button";
 import {
   Card,
@@ -12,7 +12,7 @@ import {
 import { Spinner } from "@/components/ui/pixelact-ui/spinner";
 import { Checkbox } from "@/components/ui/pixelact-ui/checkbox";
 import { Input } from "@/components/ui/pixelact-ui/input";
-import { getConfiguration, updateOpenCodeConfig, ConfigurationResponse } from "@/lib/api";
+import { useConfiguration } from "@/lib/configuration-context";
 
 interface ConfigItemProps {
   label: string;
@@ -53,56 +53,108 @@ function ConfigItem({
 }
 
 export default function Configuration() {
-  const [config, setConfig] = useState<ConfigurationResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    configuration,
+    loading,
+    error,
+    refreshConfiguration,
+    updateOpenCodeConfig,
+    updateApplicationConfig,
+  } = useConfiguration();
+
   const [workingFolder, setWorkingFolder] = useState("");
   const [username, setUsername] = useState("opencode");
   const [password, setPassword] = useState("");
-  const [saveLoading, setSaveLoading] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveOpenCodeLoading, setSaveOpenCodeLoading] = useState(false);
+  const [saveOpenCodeSuccess, setSaveOpenCodeSuccess] = useState(false);
 
-  const fetchConfig = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await getConfiguration();
-      setConfig(data);
-      setWorkingFolder(data.opencode_working_folder || "");
-      setUsername(data.opencode_username || "opencode");
-      setPassword(data.opencode_password || "");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch configuration");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [startCommands, setStartCommands] = useState<string[]>([]);
+  const [killCommand, setKillCommand] = useState("");
+  const [uiUrl, setUiUrl] = useState("");
+  const [appWorkingFolder, setAppWorkingFolder] = useState("");
+  const [saveAppLoading, setSaveAppLoading] = useState(false);
+  const [saveAppSuccess, setSaveAppSuccess] = useState(false);
 
-  const saveOpenCodeConfig = async () => {
-    setSaveLoading(true);
-    setSaveSuccess(false);
+  const [configLoaded, setConfigLoaded] = useState(false);
+
+  if (configuration && !configLoaded) {
+    setWorkingFolder(configuration.opencode.working_folder);
+    setUsername(configuration.opencode.username);
+    setPassword(configuration.opencode.password);
+    setStartCommands(configuration.application.start_commands);
+    setKillCommand(configuration.application.kill_command);
+    setUiUrl(configuration.application.ui_url);
+    setAppWorkingFolder(configuration.application.working_folder);
+    setConfigLoaded(true);
+  }
+
+  const saveOpenCodeSettings = async () => {
+    setSaveOpenCodeLoading(true);
+    setSaveOpenCodeSuccess(false);
     try {
       await updateOpenCodeConfig({
         working_folder: workingFolder,
         username: username,
         password: password,
       });
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 2000);
+      setSaveOpenCodeSuccess(true);
+      setTimeout(() => setSaveOpenCodeSuccess(false), 2000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save configuration");
+      console.error(err);
     } finally {
-      setSaveLoading(false);
+      setSaveOpenCodeLoading(false);
     }
   };
 
-  useEffect(() => {
-    fetchConfig();
-  }, [fetchConfig]);
+  const updateStartCommand = (index: number, value: string) => {
+    const newCommands = [...startCommands];
+    newCommands[index] = value;
+    setStartCommands(newCommands);
+  };
+
+  const addStartCommand = () => {
+    setStartCommands([...startCommands, ""]);
+  };
+
+  const removeStartCommand = (index: number) => {
+    const newCommands = startCommands.filter((_, i) => i !== index);
+    setStartCommands(newCommands);
+  };
+
+  const saveApplicationSettings = async () => {
+    setSaveAppLoading(true);
+    setSaveAppSuccess(false);
+    try {
+      await updateApplicationConfig({
+        start_commands: startCommands,
+        kill_command: killCommand,
+        ui_url: uiUrl,
+        working_folder: appWorkingFolder,
+      });
+      setSaveAppSuccess(true);
+      setTimeout(() => setSaveAppSuccess(false), 2000);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSaveAppLoading(false);
+    }
+  };
+
+  if (loading && !configuration) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <Spinner />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col items-center justify-center p-8 gap-6">
       <div className="pixel-font text-2xl font-bold">Configuration</div>
+
+      {error && (
+        <div className="pixel-font text-sm text-red-600">{error}</div>
+      )}
 
       <Card className="w-full max-w-md">
         <CardHeader>
@@ -112,34 +164,22 @@ export default function Configuration() {
           </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
-          {loading && !config && (
-            <div className="flex justify-center py-8">
-              <Spinner />
-            </div>
-          )}
-
-          {error && (
-            <div className="p-4 text-red-600 pixel-font text-sm text-center">
-              {error}
-            </div>
-          )}
-
-          {config && (
+          {configuration && (
             <div>
               <ConfigItem
                 label="OpenCode"
                 description="Command-line tool for AI-assisted coding"
-                checked={config.opencode.available}
-                warning={!config.opencode.available}
+                checked={configuration.systemChecks.opencode.available || false}
+                warning={!configuration.systemChecks.opencode.available}
                 details={
-                  config.opencode.available
-                    ? `Version: ${config.opencode.version}`
+                  configuration.systemChecks.opencode.available
+                    ? `Version: ${configuration.systemChecks.opencode.version}`
                     : "Not found. Install with: npm install -g opencode"
                 }
               />
 
               <div className="p-4 border-b border-gray-200">
-                <div className="pixel-font font-bold mb-2">OpenCode Configuration</div>
+                <div className="pixel-font font-bold mb-2">OpenCode Settings</div>
                 <CardDescription className="pixel-font text-sm mb-2">
                   Working directory, username and password for OpenCode web server
                 </CardDescription>
@@ -172,10 +212,10 @@ export default function Configuration() {
                       className="w-full"
                     />
                   </div>
-                  <Button onClick={saveOpenCodeConfig} disabled={saveLoading} variant="default">
-                    {saveLoading ? "Saving..." : "Save"}
+                  <Button onClick={saveOpenCodeSettings} disabled={saveOpenCodeLoading} variant="default">
+                    {saveOpenCodeLoading ? "Saving..." : "Save OpenCode Settings"}
                   </Button>
-                  {saveSuccess && (
+                  {saveOpenCodeSuccess && (
                     <p className="pixel-font text-xs text-green-600 mt-1">Saved successfully!</p>
                   )}
                 </div>
@@ -184,10 +224,10 @@ export default function Configuration() {
               <ConfigItem
                 label="Docker"
                 description="Container platform for running services"
-                checked={config.docker.running}
-                warning={!config.docker.running}
+                checked={configuration.systemChecks.docker.running || false}
+                warning={!configuration.systemChecks.docker.running}
                 details={
-                  config.docker.running
+                  configuration.systemChecks.docker.running
                     ? "Docker daemon is running"
                     : "Docker is not running. Start Docker to use containerized services"
                 }
@@ -196,10 +236,10 @@ export default function Configuration() {
               <ConfigItem
                 label="JIRA_API_KEY"
                 description="API key for JIRA integration"
-                checked={config.jira_api_key.set}
-                warning={!config.jira_api_key.set}
+                checked={configuration.systemChecks.jira_api_key.set || false}
+                warning={!configuration.systemChecks.jira_api_key.set}
                 details={
-                  config.jira_api_key.set
+                  configuration.systemChecks.jira_api_key.set
                     ? "API key is set in environment"
                     : "Set JIRA_API_KEY in your .env file"
                 }
@@ -208,10 +248,10 @@ export default function Configuration() {
               <ConfigItem
                 label=".env File"
                 description="Environment configuration file"
-                checked={config.env_file.exists}
-                warning={!config.env_file.exists}
+                checked={configuration.systemChecks.env_file.exists || false}
+                warning={!configuration.systemChecks.env_file.exists}
                 details={
-                  config.env_file.exists
+                  configuration.systemChecks.env_file.exists
                     ? ".env file exists in server directory"
                     : "No .env file found in server directory"
                 }
@@ -221,8 +261,98 @@ export default function Configuration() {
         </CardContent>
       </Card>
 
-      <Button onClick={fetchConfig} disabled={loading} variant="default">
-        {loading ? "Checking..." : "Check Configuration"}
+      <Card className="w-full max-w-md">
+        <CardHeader>
+          <CardTitle>Application Settings</CardTitle>
+          <CardDescription>
+            Configure commands to start your application and related settings
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="p-6">
+          <div className="space-y-4">
+            <div>
+              <label className="pixel-font font-bold block mb-2">
+                Start Commands
+              </label>
+              <div className="space-y-2">
+                {startCommands.length === 0 ? (
+                  <Button onClick={addStartCommand} variant="secondary" size="sm">
+                    Add Command
+                  </Button>
+                ) : (
+                  <>
+                    {startCommands.map((cmd, index) => (
+                      <div key={index} className="flex gap-2">
+                        <Input
+                          value={cmd}
+                          onChange={(e) => updateStartCommand(index, e.target.value)}
+                          placeholder={`Command ${index + 1}`}
+                          className="flex-1"
+                        />
+                        {startCommands.length > 1 && (
+                          <Button
+                            onClick={() => removeStartCommand(index)}
+                            variant="destructive"
+                            size="sm"
+                          >
+                            Remove
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                    <Button onClick={addStartCommand} variant="secondary" size="sm">
+                      Add Command
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <label className="pixel-font font-bold block mb-2">
+                Kill Command
+              </label>
+              <Input
+                value={killCommand}
+                onChange={(e) => setKillCommand(e.target.value)}
+                placeholder="pkill -f 'process name' or killall ProcessName"
+              />
+            </div>
+
+            <div>
+              <label className="pixel-font font-bold block mb-2">
+                Working Directory
+              </label>
+              <Input
+                value={appWorkingFolder}
+                onChange={(e) => setAppWorkingFolder(e.target.value)}
+                placeholder="/path/to/application/folder"
+              />
+            </div>
+
+            <div>
+              <label className="pixel-font font-bold block mb-2">
+                UI URL
+              </label>
+              <Input
+                value={uiUrl}
+                onChange={(e) => setUiUrl(e.target.value)}
+                placeholder="http://localhost:3000"
+              />
+            </div>
+
+            <Button onClick={saveApplicationSettings} disabled={saveAppLoading} variant="default">
+              {saveAppLoading ? "Saving..." : "Save Application Settings"}
+            </Button>
+            {saveAppSuccess && (
+              <p className="pixel-font text-xs text-green-600 mt-1">Saved successfully!</p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Button onClick={refreshConfiguration} disabled={loading} variant="default">
+        {loading ? "Checking..." : "Refresh Configuration"}
       </Button>
     </div>
   );

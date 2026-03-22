@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/pixelact-ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/pixelact-ui/card";
-import { Input } from "@/components/ui/pixelact-ui/input";
 import { Spinner } from "@/components/ui/pixelact-ui/spinner";
 import { cn } from "@/lib/utils";
 import "@/components/ui/pixelact-ui/styles/styles.css";
@@ -15,6 +14,16 @@ interface Task {
   source: string;
   jira_ticket: string;
   created_at: string;
+  status: string;
+  session_id: string | null;
+}
+
+interface TaskStatus {
+  task_id: string;
+  status: string;
+  session_id: string | null;
+  session_url: string | null;
+  session_info: any;
 }
 
 interface Config {
@@ -26,9 +35,9 @@ const API_BASE = "http://localhost:5556";
 
 export default function TaskManagement() {
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [taskStatuses, setTaskStatuses] = useState<Record<string, TaskStatus>>({});
+  const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [executing, setExecuting] = useState<string | null>(null);
   const [config, setConfig] = useState<Config | null>(null);
   const [agents, setAgents] = useState<string[]>([]);
   const [status, setStatus] = useState<{ msg: string; type: "success" | "error" } | null>(null);
@@ -39,6 +48,7 @@ export default function TaskManagement() {
   });
 
   const fetchTasks = useCallback(async () => {
+    setLoading(true);
     try {
       const response = await fetch(`${API_BASE}/tasks`);
       if (response.ok) {
@@ -50,6 +60,25 @@ export default function TaskManagement() {
       setLoading(false);
     }
   }, []);
+
+  const fetchTaskStatus = useCallback(async (taskId: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/tasks/${taskId}/status`);
+      if (response.ok) {
+        const data = await response.json();
+        setTaskStatuses(prev => ({ ...prev, [taskId]: data }));
+      }
+    } catch {
+    }
+  }, []);
+
+  const fetchAllTaskStatuses = useCallback(async () => {
+    for (const task of tasks) {
+      if (task.session_id && !taskStatuses[task.id]?.session_info) {
+        await fetchTaskStatus(task.id);
+      }
+    }
+  }, [tasks, fetchTaskStatus, taskStatuses]);
 
   const fetchConfig = useCallback(async () => {
     try {
@@ -71,6 +100,9 @@ export default function TaskManagement() {
       if (response.ok) {
         const data = await response.json();
         setAgents(data.agents);
+        if (data.agents.includes("build") && !newTask.agent) {
+          setNewTask(prev => ({ ...prev, agent: "build" }));
+        }
       }
     } catch {
       setAgents([]);
@@ -82,9 +114,17 @@ export default function TaskManagement() {
     fetchConfig();
   }, [fetchTasks, fetchConfig]);
 
+  useEffect(() => {
+    if (tasks.length > 0) {
+      fetchAllTaskStatuses();
+      const interval = setInterval(fetchAllTaskStatuses, 10000);
+      return () => clearInterval(interval);
+    }
+  }, [tasks.length, fetchAllTaskStatuses]);
+
   const showStatus = (msg: string, type: "success" | "error") => {
     setStatus({ msg, type });
-    setTimeout(() => setStatus(null), 3000);
+    setTimeout(() => setStatus(null), 5000);
   };
 
   const createTask = async () => {
@@ -102,7 +142,12 @@ export default function TaskManagement() {
       });
 
       if (response.ok) {
-        showStatus("Task created!", "success");
+        const data = await response.json();
+        if (data.execution_error) {
+          showStatus(`Task created but failed to execute: ${data.execution_error.error}`, "error");
+        } else {
+          showStatus(`Task created and running! Session: ${data.execution?.session_id}`, "success");
+        }
         setNewTask({ description: "", agent: "" });
         fetchTasks();
       } else {
@@ -112,27 +157,6 @@ export default function TaskManagement() {
       showStatus("Failed to create task", "error");
     } finally {
       setCreating(false);
-    }
-  };
-
-  const executeTask = async (taskId: string) => {
-    setExecuting(taskId);
-    try {
-      const response = await fetch(`${API_BASE}/tasks/${taskId}/execute`, {
-        method: "POST",
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        showStatus(`Task started! Session: ${data.session_id}`, "success");
-      } else {
-        const error = await response.json();
-        showStatus(error.error || "Failed to execute task", "error");
-      }
-    } catch {
-      showStatus("Failed to execute task", "error");
-    } finally {
-      setExecuting(null);
     }
   };
 
@@ -153,21 +177,29 @@ export default function TaskManagement() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex flex-col items-center justify-center p-8">
-        <Spinner />
-      </div>
-    );
-  }
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case "Working": return "text-blue-600";
+      case "Creating Pull Request": return "text-yellow-600";
+      case "Updating Jira": return "text-purple-600";
+      case "Done": return "text-green-600";
+      default: return "text-gray-600";
+    }
+  };
 
   return (
     <div className="flex flex-col items-center p-8 gap-6">
       <div className="pixel-font text-2xl font-bold">Task Management</div>
 
+      {loading && !tasks.length && (
+        <div className="flex justify-center py-8">
+          <Spinner />
+        </div>
+      )}
+
       {status && (
         <div className={cn(
-          "pixel-font text-sm p-2 rounded",
+          "pixel-font text-sm p-2 rounded max-w-2xl w-full",
           status.type === "success" ? "bg-green-100 text-green-600" : "bg-red-100 text-red-600"
         )}>
           {status.msg}
@@ -240,36 +272,47 @@ export default function TaskManagement() {
           </CardHeader>
           <CardContent className="p-6">
             <div className="space-y-4">
-              {tasks.map((task) => (
-                <div key={task.id} className="border p-4 rounded">
-                  <div className="flex justify-between items-start">
-                    <div className="flex-1">
-                      <p className="pixel-font">{task.description}</p>
-                      <div className="pixel-font text-xs text-gray-500 mt-2">
-                        {task.agent && <p>Agent: {task.agent}</p>}
-                        <p>Created: {new Date(task.created_at).toLocaleString()}</p>
+              {tasks.map((task) => {
+                const taskStatus = taskStatuses[task.id];
+                return (
+                  <div key={task.id} className="border p-4 rounded">
+                    <div className="flex justify-between items-start">
+                      <div className="flex-1">
+                        <p className="pixel-font">{task.description}</p>
+                        <div className="pixel-font text-xs text-gray-500 mt-2 space-y-1">
+                          {task.agent && <p>Agent: {task.agent}</p>}
+                          <p>Created: {new Date(task.created_at).toLocaleString()}</p>
+                          <p className={getStatusColor(taskStatus?.status || task.status)}>
+                            Status: {taskStatus?.status || task.status}
+                          </p>
+                          {taskStatus?.session_url && (
+                            <a
+                              href={taskStatus.session_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:underline block"
+                            >
+                              Open Session: {taskStatus.session_id}
+                            </a>
+                          )}
+                          {!taskStatus?.session_url && task.session_id && (
+                            <p className="text-gray-400">Session: {task.session_id}</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex gap-2 ml-4">
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => deleteTask(task.id)}
+                        >
+                          Delete
+                        </Button>
                       </div>
                     </div>
-                    <div className="flex gap-2 ml-4">
-                      <Button
-                        size="sm"
-                        variant="success"
-                        onClick={() => executeTask(task.id)}
-                        disabled={executing === task.id || !config?.opencode_working_folder}
-                      >
-                        {executing === task.id ? "Running..." : "Run"}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="destructive"
-                        onClick={() => deleteTask(task.id)}
-                      >
-                        Delete
-                      </Button>
-                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
         </Card>
