@@ -1,0 +1,27 @@
+# Config
+server/config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+
+# Logs
+server/logs/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# UI
+ui/node_modules/
+.ui/
+
+# Misc
+.DS_Store
+*.log

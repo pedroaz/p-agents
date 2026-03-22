@@ -11,7 +11,8 @@ import {
 } from "@/components/ui/pixelact-ui/card";
 import { Spinner } from "@/components/ui/pixelact-ui/spinner";
 import { Checkbox } from "@/components/ui/pixelact-ui/checkbox";
-import { getConfiguration, ConfigurationResponse } from "@/lib/api";
+import { Input } from "@/components/ui/pixelact-ui/input";
+import { getConfiguration, updateOpenCodeConfig, ConfigurationResponse } from "@/lib/api";
 
 interface ConfigItemProps {
   label: string;
@@ -55,6 +56,11 @@ export default function Configuration() {
   const [config, setConfig] = useState<ConfigurationResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [workingFolder, setWorkingFolder] = useState("");
+  const [username, setUsername] = useState("opencode");
+  const [password, setPassword] = useState("");
+  const [saveLoading, setSaveLoading] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   const fetchConfig = useCallback(async () => {
     setLoading(true);
@@ -62,12 +68,33 @@ export default function Configuration() {
     try {
       const data = await getConfiguration();
       setConfig(data);
+      setWorkingFolder(data.opencode_working_folder || "");
+      setUsername(data.opencode_username || "opencode");
+      setPassword(data.opencode_password || "");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch configuration");
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const saveOpenCodeConfig = async () => {
+    setSaveLoading(true);
+    setSaveSuccess(false);
+    try {
+      await updateOpenCodeConfig({
+        working_folder: workingFolder,
+        username: username,
+        password: password,
+      });
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save configuration");
+    } finally {
+      setSaveLoading(false);
+    }
+  };
 
   useEffect(() => {
     fetchConfig();
@@ -110,6 +137,49 @@ export default function Configuration() {
                     : "Not found. Install with: npm install -g opencode"
                 }
               />
+
+              <div className="p-4 border-b border-gray-200">
+                <div className="pixel-font font-bold mb-2">OpenCode Configuration</div>
+                <CardDescription className="pixel-font text-sm mb-2">
+                  Working folder, username and password for OpenCode web server
+                </CardDescription>
+                <div className="space-y-3">
+                  <div>
+                    <label className="pixel-font text-xs block mb-1">Working Folder</label>
+                    <Input
+                      value={workingFolder}
+                      onChange={(e) => setWorkingFolder(e.target.value)}
+                      placeholder="/path/to/working/folder"
+                      className="w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="pixel-font text-xs block mb-1">Username</label>
+                    <Input
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      placeholder="opencode"
+                      className="w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="pixel-font text-xs block mb-1">Password (leave empty for no auth)</label>
+                    <Input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="password"
+                      className="w-full"
+                    />
+                  </div>
+                  <Button onClick={saveOpenCodeConfig} disabled={saveLoading} variant="default">
+                    {saveLoading ? "Saving..." : "Save"}
+                  </Button>
+                  {saveSuccess && (
+                    <p className="pixel-font text-xs text-green-600 mt-1">Saved successfully!</p>
+                  )}
+                </div>
+              </div>
 
               <ConfigItem
                 label="Docker"

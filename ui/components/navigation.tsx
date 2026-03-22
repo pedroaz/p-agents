@@ -9,6 +9,7 @@ const navItems = [
   { href: "/open-code", label: "Open Code" },
   { href: "/vs-code", label: "VS Code" },
   { href: "/jira-docker", label: "Jira Docker" },
+  { href: "/application", label: "Application" },
   { href: "/configuration", label: "Configuration" },
 ];
 
