@@ -38,6 +38,7 @@ export default function TaskManagement() {
   const [taskStatuses, setTaskStatuses] = useState<Record<string, TaskStatus>>({});
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [refreshing, setRefreshing] = useState<string | null>(null);
   const [config, setConfig] = useState<Config | null>(null);
   const [agents, setAgents] = useState<string[]>([]);
   const [status, setStatus] = useState<{ msg: string; type: "success" | "error" } | null>(null);
@@ -107,7 +108,7 @@ export default function TaskManagement() {
     } catch {
       setAgents([]);
     }
-  }, []);
+  }, [newTask.agent]);
 
   useEffect(() => {
     fetchTasks();
@@ -117,7 +118,7 @@ export default function TaskManagement() {
   useEffect(() => {
     if (tasks.length > 0) {
       fetchAllTaskStatuses();
-      const interval = setInterval(fetchAllTaskStatuses, 10000);
+      const interval = setInterval(fetchAllTaskStatuses, 15000);
       return () => clearInterval(interval);
     }
   }, [tasks.length, fetchAllTaskStatuses]);
@@ -158,6 +159,22 @@ export default function TaskManagement() {
     } finally {
       setCreating(false);
     }
+  };
+
+  const refreshTask = async (taskId: string) => {
+    setRefreshing(taskId);
+    await fetchTaskStatus(taskId);
+    await fetchTasks();
+    setRefreshing(null);
+  };
+
+  const refreshAllTasks = async () => {
+    setRefreshing("all");
+    await fetchTasks();
+    for (const task of tasks) {
+      await fetchTaskStatus(task.id);
+    }
+    setRefreshing(null);
   };
 
   const deleteTask = async (taskId: string) => {
@@ -268,12 +285,23 @@ export default function TaskManagement() {
       {tasks.length > 0 && (
         <Card className="w-full max-w-2xl">
           <CardHeader>
-            <CardTitle>Tasks ({tasks.length})</CardTitle>
+            <div className="flex justify-between items-center">
+              <CardTitle>Tasks ({tasks.length})</CardTitle>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={refreshAllTasks}
+                disabled={refreshing === "all"}
+              >
+                {refreshing === "all" ? "Refreshing..." : "Refresh All"}
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="p-6">
             <div className="space-y-4">
               {tasks.map((task) => {
                 const taskStatus = taskStatuses[task.id];
+                const isRefreshing = refreshing === task.id;
                 return (
                   <div key={task.id} className="border p-4 rounded">
                     <div className="flex justify-between items-start">
@@ -301,6 +329,14 @@ export default function TaskManagement() {
                         </div>
                       </div>
                       <div className="flex gap-2 ml-4">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => refreshTask(task.id)}
+                          disabled={isRefreshing || refreshing === "all"}
+                        >
+                          {isRefreshing ? "..." : "Refresh"}
+                        </Button>
                         <Button
                           size="sm"
                           variant="destructive"

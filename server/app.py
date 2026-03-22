@@ -1,6 +1,7 @@
 import os
 import json
 import base64
+import socket
 import subprocess
 import threading
 import requests
@@ -340,6 +341,14 @@ def kill_single_process(proc_id):
         return jsonify({"error": str(e)}), 500
 
 
+def is_port_open(host, port, timeout=1):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except (socket.timeout, ConnectionRefusedError, OSError):
+        return False
+
+
 @app.route("/opencode/status")
 def opencode_status():
     global OPENCODE_PROCESS
@@ -356,6 +365,9 @@ def opencode_status():
         except OSError:
             OPENCODE_PROCESS["pid"] = None
             OPENCODE_PROCESS["proc"] = None
+
+    if not running:
+        running = is_port_open("127.0.0.1", OPENCODE_PORT)
 
     saved_config = load_config()
     if saved_config.get("opencode_password"):
@@ -866,18 +878,27 @@ def execute_task_via_api(task_id, task, saved_config):
 
         opencode_session_id = create_response.json().get("id")
 
-        message_body = {"parts": [{"type": "text", "text": description}]}
+        prefix_prompt = """You are an INDEPENDENT AGENT operating autonomously. Follow these rules:
+
+1. DO NOT ask questions to the user unless explicitly requested to do so.
+2. Complete the task to the best of your knowledge and abilities without seeking confirmation.
+3. If you encounter issues, try multiple approaches before reporting problems.
+4. YOU ARE WORKING ON: """
+
+        full_prompt = prefix_prompt + description
+
+        message_body = {"parts": [{"type": "text", "text": full_prompt}]}
         if agent:
             message_body["agent"] = agent
         if model_str:
             message_body["model"] = format_model(model_str)
 
         send_response = requests.post(
-            f"{OPENCODE_SERVER_URL}/session/{opencode_session_id}/message",
+            f"{OPENCODE_SERVER_URL}/session/{opencode_session_id}/prompt_async",
             auth=auth if auth else None,
             headers=headers,
             json=message_body,
-            timeout=300,
+            timeout=10,
         )
 
         running_tasks[task_id] = {
@@ -892,36 +913,33 @@ def execute_task_via_api(task_id, task, saved_config):
             f.write(f"[{datetime.now().isoformat()}] Session: {opencode_session_id}\n")
             f.write(f"[{datetime.now().isoformat()}] Description: {description}\n")
             f.write(f"[{datetime.now().isoformat()}] Agent: {agent or 'default'}\n")
-            f.write(f"[{datetime.now().isoformat()}] Model: {model_str}\n\n")
-            if send_response.status_code == 200:
-                result = send_response.json()
-                f.write(f"[{datetime.now().isoformat()}] Response:\n")
-                f.write(json.dumps(result, indent=2))
-            else:
-                f.write(f"[{datetime.now().isoformat()}] Error: {send_response.text}\n")
+            f.write(f"[{datetime.now().isoformat()}] Model: {model_str}\n")
+            f.write(f"[{datetime.now().isoformat()}] Prompt sent (async mode)\n")
+            if send_response.status_code >= 400:
+                f.write(
+                    f"[{datetime.now().isoformat()}] Error ({send_response.status_code}): {send_response.text}\n"
+                )
 
         tasks = load_tasks()
         for t in tasks:
             if t["id"] == task_id:
                 t["session_id"] = opencode_session_id
-                if send_response.status_code == 200:
-                    t["status"] = "Done"
                 break
         save_tasks(tasks)
 
-        if send_response.status_code == 200:
+        if send_response.status_code >= 400:
             return jsonify(
-                {
-                    "success": True,
-                    "session_id": opencode_session_id,
-                    "session_url": build_session_url(opencode_session_id, working_dir),
-                    "response": send_response.json(),
-                    "log_file": log_file,
-                }
-            )
+                {"error": "Failed to send message", "details": send_response.text}
+            ), send_response.status_code
+
         return jsonify(
-            {"error": "Failed to send message", "details": send_response.text}
-        ), send_response.status_code
+            {
+                "success": True,
+                "session_id": opencode_session_id,
+                "session_url": build_session_url(opencode_session_id, working_dir),
+                "log_file": log_file,
+            }
+        )
 
     except requests.exceptions.Timeout:
         return jsonify(
@@ -1011,6 +1029,274 @@ def update_task_status(task_id):
     save_tasks(tasks)
 
     return jsonify({"success": True, "status": task["status"]})
+
+
+def get_working_dir():
+    saved_config = load_config()
+    working_dir = saved_config.get("opencode_working_folder", "")
+    if not working_dir or not os.path.exists(working_dir):
+        return None
+    git_check = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        cwd=working_dir,
+    )
+    if git_check.returncode != 0 or git_check.stdout.strip() != "true":
+        return None
+    return working_dir
+
+
+def run_git_command(cmd, cwd=None):
+    try:
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=cwd
+        )
+        return {
+            "success": result.returncode == 0,
+            "output": result.stdout.strip(),
+            "error": result.stderr.strip(),
+        }
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+def run_git_command_list(cmd_list, cwd=None):
+    try:
+        result = subprocess.run(
+            cmd_list, capture_output=True, text=True, timeout=30, cwd=cwd
+        )
+        return {
+            "success": result.returncode == 0,
+            "output": result.stdout.strip(),
+            "error": result.stderr.strip(),
+        }
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+
+@app.route("/git/status")
+def git_status():
+    working_dir = get_working_dir()
+    if not working_dir:
+        return jsonify(
+            {"error": "No working directory configured or not a git repository"}
+        ), 400
+
+    branch_result = run_git_command("git branch --show-current", cwd=working_dir)
+    current_branch = branch_result["output"] if branch_result["success"] else "unknown"
+
+    status_result = run_git_command("git status --porcelain", cwd=working_dir)
+    uncommitted_files = (
+        len(status_result["output"].splitlines()) if status_result["output"] else 0
+    )
+
+    return jsonify(
+        {
+            "working_dir": working_dir,
+            "current_branch": current_branch,
+            "uncommitted_files": uncommitted_files,
+            "has_changes": uncommitted_files > 0,
+        }
+    )
+
+
+@app.route("/git/pulls")
+def git_pulls():
+    working_dir = get_working_dir()
+    if not working_dir:
+        return jsonify(
+            {"error": "No working directory configured or not a git repository"}
+        ), 400
+
+    result = run_git_command(
+        "gh pr list --json number,title,state,url,headRefName --jq '.'", cwd=working_dir
+    )
+    if not result["success"]:
+        return jsonify({"error": result["error"] or "Failed to list PRs"}), 500
+
+    try:
+        prs = json.loads(result["output"]) if result["output"] else []
+        return jsonify({"pulls": prs, "count": len(prs)})
+    except json.JSONDecodeError:
+        return jsonify({"pulls": [], "count": 0})
+
+
+@app.route("/git/branches")
+def git_branches():
+    working_dir = get_working_dir()
+    if not working_dir:
+        return jsonify(
+            {"error": "No working directory configured or not a git repository"}
+        ), 400
+
+    result = run_git_command(
+        "git branch -a --format='%(refname:short)'", cwd=working_dir
+    )
+    if not result["success"]:
+        return jsonify({"error": result["error"] or "Failed to list branches"}), 500
+
+    branches = [b.strip() for b in result["output"].split("\n") if b.strip()]
+    return jsonify({"branches": branches})
+
+
+@app.route("/git/switch-branch", methods=["POST"])
+def git_switch_branch():
+    data = request.get_json()
+    if not data or "branch" not in data:
+        return jsonify({"error": "branch is required"}), 400
+
+    working_dir = get_working_dir()
+    if not working_dir:
+        return jsonify(
+            {"error": "No working directory configured or not a git repository"}
+        ), 400
+
+    branch = data["branch"]
+    result = run_git_command(f"git checkout {branch}", cwd=working_dir)
+    if not result["success"]:
+        return jsonify({"error": result["error"]}), 500
+
+    return jsonify({"success": True, "branch": branch})
+
+
+@app.route("/git/create-branch", methods=["POST"])
+def git_create_branch():
+    data = request.get_json()
+    if not data or "name" not in data:
+        return jsonify({"error": "name is required"}), 400
+
+    working_dir = get_working_dir()
+    if not working_dir:
+        return jsonify(
+            {"error": "No working directory configured or not a git repository"}
+        ), 400
+
+    name = data["name"]
+    from_branch = data.get("from", "")
+
+    cmd = (
+        f"git checkout -b {name}"
+        if not from_branch
+        else f"git checkout -b {name} {from_branch}"
+    )
+    result = run_git_command(cmd, cwd=working_dir)
+    if not result["success"]:
+        return jsonify({"error": result["error"]}), 500
+
+    return jsonify({"success": True, "branch": name})
+
+
+@app.route("/git/create-pull", methods=["POST"])
+def git_create_pull():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Request body is required"}), 400
+
+    working_dir = get_working_dir()
+    if not working_dir:
+        return jsonify(
+            {"error": "No working directory configured or not a git repository"}
+        ), 400
+
+    title = data.get("title", "")
+    body = data.get("body", "")
+    base = data.get("base", "main")
+
+    if not title:
+        return jsonify({"error": "title is required"}), 400
+
+    branch_result = run_git_command("git branch --show-current", cwd=working_dir)
+    head = branch_result["output"] if branch_result["success"] else ""
+
+    if not head:
+        return jsonify({"error": "Could not determine current branch"}), 400
+
+    run_git_command("git fetch origin main", cwd=working_dir)
+    status_result = run_git_command("git status --porcelain", cwd=working_dir)
+    if status_result["output"]:
+        run_git_command("git add -A", cwd=working_dir)
+        commit_result = run_git_command(f"git commit -m '{title}'", cwd=working_dir)
+        if not commit_result["success"]:
+            return jsonify(
+                {"error": f"Failed to commit: {commit_result['error']}"}
+            ), 500
+
+    push_result = run_git_command(f"git push -u origin {head} --force", cwd=working_dir)
+    if not push_result["success"]:
+        return jsonify({"error": f"Failed to push branch: {push_result['error']}"}), 500
+
+    cmd_parts = [
+        "gh",
+        "pr",
+        "create",
+        "--title",
+        title,
+        "--body",
+        body or title,
+        "--base",
+        base,
+    ]
+    if body:
+        cmd_parts.extend(["--body", body])
+
+    result = run_git_command_list(cmd_parts, cwd=working_dir)
+    if not result["success"]:
+        return jsonify(
+            {
+                "error": result["error"] or "Failed to create PR",
+                "output": result["output"],
+                "head": head,
+                "base": base,
+            }
+        ), 500
+
+    return jsonify({"success": True, "url": result["output"]})
+
+
+@app.route("/git/reset", methods=["POST"])
+def git_reset():
+    working_dir = get_working_dir()
+    if not working_dir:
+        return jsonify(
+            {"error": "No working directory configured or not a git repository"}
+        ), 400
+
+    data = request.get_json() or {}
+    discard = data.get("discard", False)
+    base_branch = data.get("base", "main")
+
+    branch_result = run_git_command("git branch --show-current", cwd=working_dir)
+    current_branch = branch_result["output"] if branch_result["success"] else ""
+
+    errors = []
+
+    if discard:
+        result = run_git_command(
+            f"git checkout {current_branch} --force", cwd=working_dir
+        )
+    else:
+        result = run_git_command("git stash", cwd=working_dir)
+    if not result["success"] and "Nothing to stash" not in result.get("error", ""):
+        errors.append(f"stash/discard: {result['error']}")
+
+    result = run_git_command(f"git checkout {base_branch} --force", cwd=working_dir)
+    if not result["success"]:
+        errors.append(f"checkout: {result['error']}")
+        return jsonify({"error": "; ".join(errors)}), 500
+
+    result = run_git_command(f"git pull origin {base_branch}", cwd=working_dir)
+    if not result["success"]:
+        errors.append(f"pull: {result['error']}")
+
+    return jsonify(
+        {
+            "success": len(errors) == 0,
+            "errors": errors if errors else None,
+            "branch": base_branch or "main",
+        }
+    )
 
 
 if __name__ == "__main__":
