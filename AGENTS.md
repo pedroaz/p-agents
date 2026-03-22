@@ -3,6 +3,24 @@
 - `server/` - Python Flask API (port 5556)
 - `ui/` - Next.js frontend (port 5555)
 
+# OpenCode Integration
+
+The Flask server communicates with OpenCode server via HTTP API (port 5557) by default. Use CLI mode only when API is unavailable.
+
+## OpenCode Endpoints (Internal)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET` | `/opencode/health` | Check opencode server health |
+| `GET` | `/opencode/agents` | List agents from opencode server |
+| `GET` | `/opencode/sessions` | List sessions |
+| `POST` | `/opencode/send-message` | Send prompt to opencode server |
+| `POST` | `/opencode/sessions/<id>/abort` | Abort a session |
+
+## Task Execution
+
+Task execution uses the opencode HTTP API by default (not CLI). To force CLI mode: `POST /tasks/<id>/execute?api=false`.
+
 # Package Manager
 
 This project uses **pnpm** as the package manager. Do NOT use npm or yarn.

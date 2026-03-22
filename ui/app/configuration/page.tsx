@@ -141,7 +141,7 @@ export default function Configuration() {
               <div className="p-4 border-b border-gray-200">
                 <div className="pixel-font font-bold mb-2">OpenCode Configuration</div>
                 <CardDescription className="pixel-font text-sm mb-2">
-                  Working folder, username and password for OpenCode web server
+                  Working directory, username and password for OpenCode web server
                 </CardDescription>
                 <div className="space-y-3">
                   <div>

@@ -284,7 +284,7 @@ export default function Application() {
 
                 <div>
                   <label className="pixel-font font-bold block mb-2">
-                    Working Folder
+                    Working Directory
                   </label>
                   <Input
                     value={config.working_folder}

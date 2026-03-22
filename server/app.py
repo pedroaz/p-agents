@@ -2,6 +2,7 @@ import os
 import json
 import subprocess
 import threading
+import requests
 from datetime import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -19,6 +20,7 @@ running_processes = {}
 
 OPENCODE_PORT = 5557
 OPENCODE_PROCESS = {"pid": None, "proc": None}
+OPENCODE_SERVER_URL = f"http://127.0.0.1:{OPENCODE_PORT}"
 
 
 def load_config():
@@ -67,6 +69,11 @@ def check_docker():
         return {"running": False}
 
 
+def check_jira_token():
+    token = os.environ.get("JIRA_TOKEN")
+    return {"set": bool(token)}
+
+
 def check_jira_api_key():
     key = os.environ.get("JIRA_API_KEY")
     return {"set": bool(key)}
@@ -89,6 +96,7 @@ def get_configuration():
         "opencode": check_opencode(),
         "docker": check_docker(),
         "jira_api_key": check_jira_api_key(),
+        "jira_token": check_jira_token(),
         "env_file": check_env_file(),
         "opencode_working_folder": saved_config.get("opencode_working_folder", ""),
         "opencode_username": saved_config.get("opencode_username", "opencode"),
@@ -475,6 +483,442 @@ def opencode_restart():
             "auth": bool(password),
         }
     )
+
+
+def get_opencode_auth():
+    saved_config = load_config()
+    username = saved_config.get("opencode_username", "opencode")
+    password = saved_config.get("opencode_password", "")
+    if password:
+        return (username, password)
+    return None
+
+
+def format_model(model_str):
+    if not model_str:
+        return None
+    parts = model_str.split("/")
+    if len(parts) == 2:
+        return {"providerID": parts[0], "modelID": parts[1]}
+    return {"providerID": "minimax", "modelID": model_str}
+
+
+@app.route("/opencode/health")
+def opencode_health():
+    try:
+        auth = get_opencode_auth()
+        response = requests.get(
+            f"{OPENCODE_SERVER_URL}/global/health",
+            auth=auth if auth else None,
+            timeout=5,
+        )
+        return jsonify(response.json())
+    except Exception as e:
+        return jsonify({"error": str(e), "connected": False}), 503
+
+
+@app.route("/opencode/agents")
+def opencode_agents():
+    try:
+        auth = get_opencode_auth()
+        response = requests.get(
+            f"{OPENCODE_SERVER_URL}/agent", auth=auth if auth else None, timeout=10
+        )
+        if response.status_code == 200:
+            return jsonify(response.json())
+        return jsonify(
+            {"error": "Failed to get agents", "status": response.status_code}
+        ), response.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+
+
+@app.route("/opencode/sessions")
+def opencode_sessions():
+    try:
+        auth = get_opencode_auth()
+        response = requests.get(
+            f"{OPENCODE_SERVER_URL}/session", auth=auth if auth else None, timeout=10
+        )
+        if response.status_code == 200:
+            return jsonify(response.json())
+        return jsonify(
+            {"error": "Failed to get sessions", "status": response.status_code}
+        ), response.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+
+
+@app.route("/opencode/send-message", methods=["POST"])
+def opencode_send_message():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Request body is required"}), 400
+
+    prompt = data.get("prompt")
+    if not prompt:
+        return jsonify({"error": "prompt is required"}), 400
+
+    agent = data.get("agent", "")
+    model = data.get("model", "")
+    session_id = data.get("session_id")
+
+    try:
+        auth = get_opencode_auth()
+        headers = {"Content-Type": "application/json"}
+
+        if not session_id:
+            create_response = requests.post(
+                f"{OPENCODE_SERVER_URL}/session",
+                auth=auth if auth else None,
+                headers=headers,
+                json={},
+                timeout=10,
+            )
+            if create_response.status_code != 200:
+                return jsonify(
+                    {
+                        "error": "Failed to create session",
+                        "details": create_response.text,
+                    }
+                ), create_response.status_code
+            session_data = create_response.json()
+            session_id = session_data.get("id")
+
+        message_body = {"parts": [{"type": "text", "text": prompt}]}
+        if agent:
+            message_body["agent"] = agent
+        if model:
+            message_body["model"] = format_model(model)
+
+        send_response = requests.post(
+            f"{OPENCODE_SERVER_URL}/session/{session_id}/message",
+            auth=auth if auth else None,
+            headers=headers,
+            json=message_body,
+            timeout=120,
+        )
+
+        if send_response.status_code == 200:
+            return jsonify({"session_id": session_id, "response": send_response.json()})
+        return jsonify(
+            {"error": "Failed to send message", "details": send_response.text}
+        ), send_response.status_code
+
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "Request timed out", "session_id": session_id}), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/opencode/sessions/<session_id>/abort", methods=["POST"])
+def opencode_abort_session(session_id):
+    try:
+        auth = get_opencode_auth()
+        response = requests.post(
+            f"{OPENCODE_SERVER_URL}/session/{session_id}/abort",
+            auth=auth if auth else None,
+            timeout=10,
+        )
+        return jsonify({"success": response.status_code == 200})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+TASKS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks.json")
+
+running_tasks = {}
+
+
+def load_tasks():
+    if os.path.exists(TASKS_FILE):
+        try:
+            with open(TASKS_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return []
+    return []
+
+
+def save_tasks(tasks):
+    with open(TASKS_FILE, "w") as f:
+        json.dump(tasks, f, indent=2)
+
+
+def check_jira_token():
+    key = os.environ.get("JIRA_TOKEN")
+    return {"set": bool(key)}
+
+
+@app.route("/tasks")
+def get_tasks():
+    tasks = load_tasks()
+    return jsonify({"tasks": tasks})
+
+
+@app.route("/tasks", methods=["POST"])
+def create_task():
+    data = request.get_json()
+    if not data or "description" not in data:
+        return jsonify({"error": "description is required"}), 400
+
+    tasks = load_tasks()
+    task_id = str(int(datetime.now().timestamp() * 1000))
+
+    new_task = {
+        "id": task_id,
+        "description": data["description"],
+        "agent": data.get("agent", ""),
+        "source": data.get("source", "manual"),
+        "jira_ticket": data.get("jira_ticket", ""),
+        "created_at": datetime.now().isoformat(),
+    }
+
+    tasks.append(new_task)
+    save_tasks(tasks)
+
+    saved_config = load_config()
+    execute_result = execute_task_via_api(task_id, new_task, saved_config)
+
+    if isinstance(execute_result, tuple):
+        return jsonify(
+            {
+                "success": True,
+                "task": new_task,
+                "execution_error": execute_result[0].get_json(),
+            }
+        ), execute_result[1]
+    return jsonify(
+        {"success": True, "task": new_task, "execution": execute_result.get_json()}
+    )
+
+
+@app.route("/tasks/<task_id>", methods=["DELETE"])
+def delete_task(task_id):
+    tasks = load_tasks()
+    tasks = [t for t in tasks if t["id"] != task_id]
+    save_tasks(tasks)
+
+    if task_id in running_tasks:
+        del running_tasks[task_id]
+
+    return jsonify({"success": True})
+
+
+@app.route("/agents")
+def get_agents():
+    working_dir = request.args.get("dir", "")
+
+    try:
+        result = subprocess.run(
+            ["opencode", "agent", "list"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=working_dir if working_dir and os.path.exists(working_dir) else None,
+        )
+
+        agents = []
+        if result.returncode == 0:
+            lines = result.stdout.strip().split("\n")
+            for line in lines:
+                line = line.strip()
+                if line and "(primary)" in line:
+                    agent_name = line.split("(")[0].strip()
+                    if agent_name:
+                        agents.append(agent_name)
+
+        return jsonify({"agents": agents})
+    except Exception as e:
+        return jsonify({"agents": [], "error": str(e)})
+
+
+@app.route("/tasks/<task_id>/execute", methods=["POST"])
+def execute_task(task_id):
+    tasks = load_tasks()
+    task = next((t for t in tasks if t["id"] == task_id), None)
+
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    saved_config = load_config()
+    working_dir = saved_config.get("opencode_working_folder", "")
+    description = task.get("description", "")
+    agent = task.get("agent", "")
+
+    use_api = request.args.get("api", "true").lower() == "true"
+
+    if use_api:
+        return execute_task_via_api(task_id, task, saved_config)
+
+    if not working_dir:
+        return jsonify(
+            {"error": "No working directory configured in OpenCode settings"}
+        ), 400
+
+    if not os.path.exists(working_dir):
+        return jsonify(
+            {"error": f"Working directory does not exist: {working_dir}"}
+        ), 400
+
+    if not description:
+        return jsonify({"error": "Task has no description"}), 400
+
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        session_id = f"task_{task_id}_{timestamp}"
+        log_file = os.path.join(LOGS_DIR, f"{session_id}.log")
+
+        cmd_parts = [
+            "opencode",
+            "run",
+            description,
+            "--model",
+            "minimax/MiniMax-M2.7-highspeed",
+        ]
+        if agent:
+            cmd_parts.extend(["--agent", agent])
+        cmd_parts.extend(["--title", session_id])
+
+        cmd = " ".join(cmd_parts)
+
+        proc = subprocess.Popen(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=working_dir,
+        )
+
+        running_tasks[task_id] = {
+            "pid": proc.pid,
+            "session_id": session_id,
+            "log_file": log_file,
+            "started_at": datetime.now().isoformat(),
+            "description": description,
+        }
+
+        thread = threading.Thread(target=_stream_output, args=(proc, log_file, cmd))
+        thread.daemon = True
+        thread.start()
+
+        return jsonify(
+            {
+                "success": True,
+                "session_id": session_id,
+                "pid": proc.pid,
+                "log_file": log_file,
+            }
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def execute_task_via_api(task_id, task, saved_config):
+    description = task.get("description", "")
+    agent = task.get("agent", "")
+    model_str = saved_config.get("opencode_model", "minimax/MiniMax-M2.7-highspeed")
+
+    if not description:
+        return jsonify({"error": "Task has no description"}), 400
+
+    opencode_session_id = None
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        session_id = f"task_{task_id}_{timestamp}"
+        log_file = os.path.join(LOGS_DIR, f"{session_id}.log")
+
+        auth = get_opencode_auth()
+        headers = {"Content-Type": "application/json"}
+
+        create_response = requests.post(
+            f"{OPENCODE_SERVER_URL}/session",
+            auth=auth if auth else None,
+            headers=headers,
+            json={"title": session_id},
+            timeout=10,
+        )
+
+        if create_response.status_code != 200:
+            return jsonify(
+                {"error": "Failed to create session", "details": create_response.text}
+            ), create_response.status_code
+
+        opencode_session_id = create_response.json().get("id")
+
+        message_body = {"parts": [{"type": "text", "text": description}]}
+        if agent:
+            message_body["agent"] = agent
+        if model_str:
+            message_body["model"] = format_model(model_str)
+
+        send_response = requests.post(
+            f"{OPENCODE_SERVER_URL}/session/{opencode_session_id}/message",
+            auth=auth if auth else None,
+            headers=headers,
+            json=message_body,
+            timeout=300,
+        )
+
+        running_tasks[task_id] = {
+            "session_id": opencode_session_id,
+            "log_file": log_file,
+            "started_at": datetime.now().isoformat(),
+            "description": description,
+            "mode": "api",
+        }
+
+        with open(log_file, "w") as f:
+            f.write(f"[{datetime.now().isoformat()}] Session: {opencode_session_id}\n")
+            f.write(f"[{datetime.now().isoformat()}] Description: {description}\n")
+            f.write(f"[{datetime.now().isoformat()}] Agent: {agent or 'default'}\n")
+            f.write(f"[{datetime.now().isoformat()}] Model: {model_str}\n\n")
+            if send_response.status_code == 200:
+                result = send_response.json()
+                f.write(f"[{datetime.now().isoformat()}] Response:\n")
+                f.write(json.dumps(result, indent=2))
+            else:
+                f.write(f"[{datetime.now().isoformat()}] Error: {send_response.text}\n")
+
+        if send_response.status_code == 200:
+            return jsonify(
+                {
+                    "success": True,
+                    "session_id": opencode_session_id,
+                    "response": send_response.json(),
+                    "log_file": log_file,
+                }
+            )
+        return jsonify(
+            {"error": "Failed to send message", "details": send_response.text}
+        ), send_response.status_code
+
+    except requests.exceptions.Timeout:
+        return jsonify(
+            {"error": "Request timed out", "session_id": opencode_session_id}
+        ), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/tasks/<task_id>/logs")
+def get_task_logs(task_id):
+    if task_id not in running_tasks:
+        return jsonify({"error": "Task not running or logs not found"}), 404
+
+    info = running_tasks[task_id]
+    log_file = info["log_file"]
+
+    if not os.path.exists(log_file):
+        return jsonify({"logs": ""})
+
+    try:
+        with open(log_file, "r") as f:
+            content = f.read()
+        return jsonify({"logs": content})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
