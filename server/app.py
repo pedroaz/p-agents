@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import base64
 import socket
@@ -1188,6 +1189,10 @@ def git_create_branch():
     return jsonify({"success": True, "branch": name})
 
 
+def sanitize_branch_name(name):
+    return re.sub(r"[^a-zA-Z0-9_\-/]", "", name)
+
+
 @app.route("/git/create-pull", methods=["POST"])
 def git_create_pull():
     data = request.get_json()
@@ -1201,7 +1206,7 @@ def git_create_pull():
         ), 400
 
     title = data.get("title", "")
-    body = data.get("body", "")
+    body = data.get("body", "") or ""
     base = data.get("base", "main")
 
     if not title:
@@ -1213,17 +1218,27 @@ def git_create_pull():
     if not head:
         return jsonify({"error": "Could not determine current branch"}), 400
 
+    head = sanitize_branch_name(head)
+    base = sanitize_branch_name(base)
+
+    if head == "main":
+        return jsonify({"error": "Cannot create PR from main branch"}), 400
+
     run_git_command("git fetch origin main", cwd=working_dir)
     status_result = run_git_command("git status --porcelain", cwd=working_dir)
     if status_result["output"]:
         run_git_command("git add -A", cwd=working_dir)
-        commit_result = run_git_command(f"git commit -m '{title}'", cwd=working_dir)
+        commit_result = run_git_command_list(
+            ["git", "commit", "-m", title], cwd=working_dir
+        )
         if not commit_result["success"]:
             return jsonify(
                 {"error": f"Failed to commit: {commit_result['error']}"}
             ), 500
 
-    push_result = run_git_command(f"git push -u origin {head} --force", cwd=working_dir)
+    push_result = run_git_command_list(
+        ["git", "push", "-u", "origin", head], cwd=working_dir
+    )
     if not push_result["success"]:
         return jsonify({"error": f"Failed to push branch: {push_result['error']}"}), 500
 
@@ -1238,8 +1253,6 @@ def git_create_pull():
         "--base",
         base,
     ]
-    if body:
-        cmd_parts.extend(["--body", body])
 
     result = run_git_command_list(cmd_parts, cwd=working_dir)
     if not result["success"]:
@@ -1253,6 +1266,40 @@ def git_create_pull():
         ), 500
 
     return jsonify({"success": True, "url": result["output"]})
+
+
+@app.route("/git/push", methods=["POST"])
+def git_push():
+    working_dir = get_working_dir()
+    if not working_dir:
+        return jsonify(
+            {"error": "No working directory configured or not a git repository"}
+        ), 400
+
+    branch_result = run_git_command("git branch --show-current", cwd=working_dir)
+    head = branch_result["output"] if branch_result["success"] else ""
+
+    if not head:
+        return jsonify({"error": "Could not determine current branch"}), 400
+
+    head = sanitize_branch_name(head)
+
+    if head == "main":
+        return jsonify({"error": "Cannot push main branch"}), 400
+
+    status_result = run_git_command("git status --porcelain", cwd=working_dir)
+    if status_result["output"]:
+        return jsonify(
+            {"error": "You have uncommitted changes. Commit them first."}
+        ), 400
+
+    push_result = run_git_command_list(
+        ["git", "push", "-u", "origin", head], cwd=working_dir
+    )
+    if not push_result["success"]:
+        return jsonify({"error": f"Failed to push branch: {push_result['error']}"}), 500
+
+    return jsonify({"success": True})
 
 
 @app.route("/git/reset", methods=["POST"])

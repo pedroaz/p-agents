@@ -37,6 +37,11 @@ export default function Git() {
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [prSuccess, setPrSuccess] = useState<string | null>(null);
+
+  const existingPr = pulls.find(
+    (pr) => pr.headRefName === status?.current_branch && pr.state === "open"
+  );
 
   const fetchStatus = async () => {
     try {
@@ -146,6 +151,7 @@ export default function Git() {
     setActionLoading("create-pr");
     setError(null);
     setSuccess(null);
+    setPrSuccess(null);
     try {
       const response = await fetch(`${API_BASE}/git/create-pull`, {
         method: "POST",
@@ -156,7 +162,7 @@ export default function Git() {
         const data = await response.json();
         setCreatePrTitle("");
         setCreatePrBody("");
-        setSuccess(`PR created: ${data.url}`);
+        setPrSuccess(data.url);
         await fetchPulls();
       } else {
         const data = await response.json();
@@ -164,6 +170,28 @@ export default function Git() {
       }
     } catch {
       setError("Failed to create PR");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleUpdatePr = async () => {
+    setActionLoading("update-pr");
+    setError(null);
+    setSuccess(null);
+    setPrSuccess(null);
+    try {
+      const response = await fetch(`${API_BASE}/git/push`, {
+        method: "POST",
+      });
+      if (response.ok) {
+        setPrSuccess("Branch pushed successfully");
+      } else {
+        const data = await response.json();
+        setError(data.error || "Failed to push");
+      }
+    } catch {
+      setError("Failed to push");
     } finally {
       setActionLoading(null);
     }
@@ -273,29 +301,79 @@ export default function Git() {
 
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Create Pull Request</CardTitle>
+          <CardTitle>{existingPr ? "Update Pull Request" : "Create Pull Request"}</CardTitle>
         </CardHeader>
         <CardContent className="p-6">
           <div className="flex flex-col gap-3">
-            <Input
-              placeholder="PR Title"
-              value={createPrTitle}
-              onChange={(e) => setCreatePrTitle(e.target.value)}
-            />
-            <textarea
-              className="pixel-font p-2 border rounded"
-              placeholder="PR Body (optional)"
-              value={createPrBody}
-              onChange={(e) => setCreatePrBody(e.target.value)}
-              rows={3}
-            />
-            <Button
-              onClick={handleCreatePr}
-              disabled={!createPrTitle || actionLoading === "create-pr"}
-              variant="success"
-            >
-              {actionLoading === "create-pr" ? "Creating..." : "Create PR"}
-            </Button>
+            {existingPr ? (
+              <>
+                <p className="pixel-font text-sm text-gray-600">
+                  Branch <span className="font-mono">{status?.current_branch}</span> has an open PR:
+                </p>
+                <a
+                  href={existingPr.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="pixel-font text-blue-600 hover:underline"
+                >
+                  #{existingPr.number} {existingPr.title}
+                </a>
+                {!status?.has_changes ? (
+                  <p className="pixel-font text-sm text-gray-500">Nothing to push</p>
+                ) : (
+                  <Button
+                    onClick={handleUpdatePr}
+                    disabled={actionLoading === "update-pr"}
+                    variant="success"
+                  >
+                    {actionLoading === "update-pr" ? "Pushing..." : "Update PR"}
+                  </Button>
+                )}
+              </>
+            ) : (
+              <>
+                {status?.current_branch === "main" ? (
+                  <p className="pixel-font text-sm text-red-500">
+                    Cannot create PR from main branch. Switch to a feature branch.
+                  </p>
+                ) : !status?.has_changes ? (
+                  <p className="pixel-font text-sm text-gray-500">
+                    No changes to commit. Make some changes first.
+                  </p>
+                ) : (
+                  <>
+                    <Input
+                      placeholder="PR Title"
+                      value={createPrTitle}
+                      onChange={(e) => setCreatePrTitle(e.target.value)}
+                    />
+                    <textarea
+                      className="pixel-font p-2 border rounded"
+                      placeholder="PR Body (optional)"
+                      value={createPrBody}
+                      onChange={(e) => setCreatePrBody(e.target.value)}
+                      rows={3}
+                    />
+                    <Button
+                      onClick={handleCreatePr}
+                      disabled={!createPrTitle || actionLoading === "create-pr"}
+                      variant="success"
+                    >
+                      {actionLoading === "create-pr" ? "Creating..." : "Create PR"}
+                    </Button>
+                  </>
+                )}
+              </>
+            )}
+            {prSuccess && (
+              <div className="pixel-font text-sm text-green-600 bg-green-50 p-2 rounded">
+                {prSuccess.startsWith("http") ? (
+                  <>PR created: <a href={prSuccess} target="_blank" rel="noopener noreferrer" className="underline">{prSuccess}</a></>
+                ) : (
+                  prSuccess
+                )}
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
