@@ -11,16 +11,24 @@ import {
   MenubarContent,
   MenubarItem,
 } from "@/components/ui/pixelact-ui/menubar";
-import { useGitStore } from "@/lib/store";
+import { useGitStore, useProjectStore } from "@/lib/store";
 
 export function Navigation() {
   const pathname = usePathname();
   const { status, fetchStatus, handleReset } = useGitStore();
+  const { currentProject, fetchProjects, projects } = useProjectStore();
   const [resetting, setResetting] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
 
   useEffect(() => {
-    fetchStatus();
-  }, [fetchStatus]);
+    fetchProjects();
+  }, [fetchProjects]);
+
+  useEffect(() => {
+    if (currentProject) {
+      fetchStatus();
+    }
+  }, [currentProject, fetchStatus]);
 
   const onReset = async () => {
     if (
@@ -45,36 +53,41 @@ export function Navigation() {
               P-Agents
             </h1>
           </Link>
-        </div>
-
-        {status && (
-          <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 pixel-font text-sm">
-            <span className="font-bold">Branch:</span>
-            <span
-              className={
-                status.has_changes ? "text-orange-600" : "text-green-600"
-              }
-            >
-              {status.current_branch}
-            </span>
-            {status.uncommitted_files > 0 && (
-              <span className="text-red-600">
-                ({status.uncommitted_files} uncommitted)
-              </span>
-            )}
+          {currentProject && (
             <Button
-              onClick={onReset}
-              disabled={resetting}
-              variant="destructive"
+              onClick={() => setShowInfo(!showInfo)}
+              variant={showInfo ? "default" : "secondary"}
               size="sm"
             >
-              {resetting ? "Resetting..." : "Reset"}
+              {currentProject.name} | {status?.current_branch || "no branch"}
             </Button>
-          </div>
-        )}
+          )}
+        </div>
 
         <div className="flex items-center gap-2">
           <Menubar>
+            <MenubarMenu>
+              <MenubarTrigger>Projects</MenubarTrigger>
+              <MenubarContent>
+                <Link href="/projects">
+                  <MenubarItem>Manage Projects</MenubarItem>
+                </Link>
+                {projects.map((project) => (
+                  <MenubarItem
+                    key={project.id}
+                    onClick={() => {
+                      useProjectStore.getState().setCurrentProject(project.id);
+                      fetchProjects();
+                      fetchStatus();
+                    }}
+                    className={currentProject?.id === project.id ? "bg-blue-100" : ""}
+                  >
+                    {project.name} {currentProject?.id === project.id && "(Active)"}
+                  </MenubarItem>
+                ))}
+              </MenubarContent>
+            </MenubarMenu>
+
             <MenubarMenu>
               <MenubarTrigger>Tasks</MenubarTrigger>
               <MenubarContent>
@@ -112,6 +125,36 @@ export function Navigation() {
           </Link>
         </div>
       </div>
+
+      {showInfo && currentProject && (
+        <div className="mt-3 border-t-2 border-gray-200 pt-3 flex items-center justify-center gap-8">
+          <div className="flex items-center gap-2 pixel-font text-sm">
+            <span className="font-bold">Project:</span>
+            <span className="text-blue-600">{currentProject.name}</span>
+          </div>
+          <div className="flex items-center gap-2 pixel-font text-sm">
+            <span className="font-bold">Folder:</span>
+            <span className="text-gray-600">{currentProject.folder_path || "not set"}</span>
+          </div>
+          <div className="flex items-center gap-2 pixel-font text-sm">
+            <span className="font-bold">Branch:</span>
+            <span className={status?.has_changes ? "text-orange-600" : "text-green-600"}>
+              {status?.current_branch || "unknown"}
+            </span>
+            {status?.uncommitted_files > 0 && (
+              <span className="text-red-600">({status.uncommitted_files} uncommitted)</span>
+            )}
+          </div>
+          <Button
+            onClick={onReset}
+            disabled={resetting}
+            variant="destructive"
+            size="sm"
+          >
+            {resetting ? "Resetting..." : "Reset"}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

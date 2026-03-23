@@ -135,3 +135,87 @@ export async function createGitPull(title: string, body?: string, base?: string)
   }
   return response.json();
 }
+
+export interface Project {
+  id: string;
+  name: string;
+  folder_path: string;
+  jira_board_id: string;
+  created_at: string;
+  application: {
+    start_commands: string[];
+    kill_command: string;
+    ui_url: string;
+  };
+}
+
+export interface ProjectsResponse {
+  current_project_id: string | null;
+  projects: Project[];
+}
+
+export async function getProjects(): Promise<ProjectsResponse> {
+  const response = await fetch(`${API_BASE}/projects`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch projects: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function getProject(projectId: string): Promise<Project> {
+  const response = await fetch(`${API_BASE}/projects/${projectId}`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch project: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function createProject(project: Partial<Project>): Promise<{ project: Project }> {
+  const response = await fetch(`${API_BASE}/projects`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(project),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to create project: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function updateProject(projectId: string, project: Partial<Project>): Promise<{ project: Project }> {
+  const response = await fetch(`${API_BASE}/projects/${projectId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(project),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to update project: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/projects/${projectId}`, { method: "DELETE" });
+  if (!response.ok) {
+    throw new Error(`Failed to delete project: ${response.statusText}`);
+  }
+}
+
+export async function setCurrentProject(projectId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/projects/current`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId }),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to set current project: ${response.statusText}`);
+  }
+}
+
+export async function getCurrentProject(): Promise<Project> {
+  const response = await fetch(`${API_BASE}/projects/current`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch current project: ${response.statusText}`);
+  }
+  return response.json();
+}

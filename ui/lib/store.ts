@@ -10,6 +10,7 @@ export interface Toast {
 
 export interface Task {
   id: string;
+  title: string;
   description: string;
   agent: string;
   source: string;
@@ -17,6 +18,8 @@ export interface Task {
   created_at: string;
   status: string;
   session_id: string | null;
+  project_name?: string;
+  working_dir?: string;
 }
 
 export interface TaskStatus {
@@ -143,6 +146,32 @@ interface OpenCodeStore {
   checkStatus: () => Promise<void>;
   startServer: () => Promise<void>;
   stopServer: () => Promise<void>;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  folder_path: string;
+  jira_board_id: string;
+  created_at: string;
+  application: {
+    start_commands: string[];
+    kill_command: string;
+    ui_url: string;
+  };
+}
+
+interface ProjectStore {
+  projects: Project[];
+  currentProject: Project | null;
+  loading: boolean;
+  error: string | null;
+  fetchProjects: () => Promise<void>;
+  fetchCurrentProject: () => Promise<void>;
+  createProject: (project: Partial<Project>) => Promise<boolean>;
+  updateProject: (projectId: string, project: Partial<Project>) => Promise<boolean>;
+  deleteProject: (projectId: string) => Promise<boolean>;
+  setCurrentProject: (projectId: string) => Promise<boolean>;
 }
 
 export const useToastStore = create<ToastStore>((set, get) => ({
@@ -665,6 +694,146 @@ export const useOpenCodeStore = create<OpenCodeStore>((set, get) => ({
   },
 }));
 
+export const useProjectStore = create<ProjectStore>((set, get) => ({
+  projects: [],
+  currentProject: null,
+  loading: false,
+  error: null,
+
+  fetchProjects: async () => {
+    set({ loading: true, error: null });
+    try {
+      const response = await fetch(`${API_BASE}/projects`);
+      if (response.ok) {
+        const data = await response.json();
+        set({ projects: data.projects || [] });
+        if (data.current_project_id) {
+          const current = data.projects?.find((p: Project) => p.id === data.current_project_id);
+          set({ currentProject: current || null });
+        }
+      }
+    } catch {
+      set({ error: "Failed to fetch projects" });
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  fetchCurrentProject: async () => {
+    try {
+      const response = await fetch(`${API_BASE}/projects/current`);
+      if (response.ok) {
+        const data = await response.json();
+        set({ currentProject: data });
+      }
+    } catch {
+      set({ error: "Failed to fetch current project" });
+    }
+  },
+
+  createProject: async (project) => {
+    const { addToast } = useToastStore.getState();
+    set({ loading: true, error: null });
+    try {
+      const response = await fetch(`${API_BASE}/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(project),
+      });
+      if (response.ok) {
+        addToast("Project created!", "success");
+        await get().fetchProjects();
+        return true;
+      } else {
+        const data = await response.json();
+        set({ error: data.error || "Failed to create project" });
+        addToast(data.error || "Failed to create project", "error");
+        return false;
+      }
+    } catch {
+      set({ error: "Failed to create project" });
+      addToast("Failed to create project", "error");
+      return false;
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  updateProject: async (projectId, project) => {
+    const { addToast } = useToastStore.getState();
+    set({ loading: true, error: null });
+    try {
+      const response = await fetch(`${API_BASE}/projects/${projectId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(project),
+      });
+      if (response.ok) {
+        addToast("Project updated!", "success");
+        await get().fetchProjects();
+        return true;
+      } else {
+        const data = await response.json();
+        set({ error: data.error || "Failed to update project" });
+        addToast(data.error || "Failed to update project", "error");
+        return false;
+      }
+    } catch {
+      set({ error: "Failed to update project" });
+      addToast("Failed to update project", "error");
+      return false;
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  deleteProject: async (projectId) => {
+    const { addToast } = useToastStore.getState();
+    set({ loading: true, error: null });
+    try {
+      const response = await fetch(`${API_BASE}/projects/${projectId}`, { method: "DELETE" });
+      if (response.ok) {
+        addToast("Project deleted!", "success");
+        await get().fetchProjects();
+        return true;
+      } else {
+        const data = await response.json();
+        set({ error: data.error || "Failed to delete project" });
+        addToast(data.error || "Failed to delete project", "error");
+        return false;
+      }
+    } catch {
+      set({ error: "Failed to delete project" });
+      addToast("Failed to delete project", "error");
+      return false;
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  setCurrentProject: async (projectId) => {
+    const { addToast } = useToastStore.getState();
+    try {
+      const response = await fetch(`${API_BASE}/projects/current`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: projectId }),
+      });
+      if (response.ok) {
+        await get().fetchProjects();
+        return true;
+      } else {
+        const data = await response.json();
+        addToast(data.error || "Failed to set current project", "error");
+        return false;
+      }
+    } catch {
+      addToast("Failed to set current project", "error");
+      return false;
+    }
+  },
+}));
+
 const gitStore = useGitStore.getState();
 useGitStore.setState({
   ...gitStore,
@@ -674,7 +843,6 @@ useGitStore.setState({
       if (response.ok) {
         const data = await response.json();
         useGitStore.setState({ status: data });
-        useToastStore.getState().addToast?.("Git status updated", "success");
       }
     } catch {
       useToastStore.getState().addToast?.("Failed to fetch git status", "error");

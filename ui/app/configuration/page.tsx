@@ -13,6 +13,9 @@ import { Spinner } from "@/components/ui/pixelact-ui/spinner";
 import { Checkbox } from "@/components/ui/pixelact-ui/checkbox";
 import { Input } from "@/components/ui/pixelact-ui/input";
 import { useConfiguration } from "@/lib/configuration-context";
+import { useProjectStore } from "@/lib/store";
+
+
 
 interface ConfigItemProps {
   label: string;
@@ -61,6 +64,11 @@ export default function Configuration() {
     updateOpenCodeConfig,
     updateApplicationConfig,
   } = useConfiguration();
+  const { currentProject, fetchProjects, updateProject } = useProjectStore();
+
+  const [projectName, setProjectName] = useState("");
+  const [saveProjectLoading, setSaveProjectLoading] = useState(false);
+  const [saveProjectSuccess, setSaveProjectSuccess] = useState(false);
 
   const [workingFolder, setWorkingFolder] = useState("");
   const [username, setUsername] = useState("opencode");
@@ -87,6 +95,26 @@ export default function Configuration() {
     setAppWorkingFolder(configuration.application.working_folder);
     setConfigLoaded(true);
   }
+
+  if (currentProject && !projectName) {
+    setProjectName(currentProject.name);
+  }
+
+  const saveProjectName = async () => {
+    if (!currentProject || !projectName.trim()) return;
+    setSaveProjectLoading(true);
+    setSaveProjectSuccess(false);
+    try {
+      await updateProject(currentProject.id, { name: projectName });
+      await fetchProjects();
+      setSaveProjectSuccess(true);
+      setTimeout(() => setSaveProjectSuccess(false), 2000);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSaveProjectLoading(false);
+    }
+  };
 
   const saveOpenCodeSettings = async () => {
     setSaveOpenCodeLoading(true);
@@ -156,6 +184,40 @@ export default function Configuration() {
         <div className="pixel-font text-sm text-red-600">{error}</div>
       )}
 
+      {currentProject && (
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle>Current Project</CardTitle>
+          </CardHeader>
+          <CardContent className="p-6">
+            <div className="space-y-3">
+              <div>
+                <label className="pixel-font text-xs block mb-1">Project Name</label>
+                <div className="flex gap-2">
+                  <Input
+                    value={projectName}
+                    onChange={(e) => setProjectName(e.target.value)}
+                    placeholder="Project name"
+                    className="flex-1"
+                  />
+                  <Button
+                    onClick={saveProjectName}
+                    disabled={saveProjectLoading || !projectName.trim() || projectName === currentProject.name}
+                    variant="default"
+                    size="sm"
+                  >
+                    {saveProjectLoading ? "Saving..." : "Rename"}
+                  </Button>
+                </div>
+                {saveProjectSuccess && (
+                  <p className="pixel-font text-xs text-green-600 mt-1">Project renamed!</p>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>System Checks</CardTitle>
@@ -181,7 +243,7 @@ export default function Configuration() {
               <div className="p-4 border-b border-gray-200">
                 <div className="pixel-font font-bold mb-2">OpenCode Settings</div>
                 <CardDescription className="pixel-font text-sm mb-2">
-                  Working directory, username and password for OpenCode web server
+                  Working directory for OpenCode web server
                 </CardDescription>
                 <div className="space-y-3">
                   <div>
@@ -190,25 +252,6 @@ export default function Configuration() {
                       value={workingFolder}
                       onChange={(e) => setWorkingFolder(e.target.value)}
                       placeholder="/path/to/working/folder"
-                      className="w-full"
-                    />
-                  </div>
-                  <div>
-                    <label className="pixel-font text-xs block mb-1">Username</label>
-                    <Input
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      placeholder="opencode"
-                      className="w-full"
-                    />
-                  </div>
-                  <div>
-                    <label className="pixel-font text-xs block mb-1">Password (leave empty for no auth)</label>
-                    <Input
-                      type="password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="password"
                       className="w-full"
                     />
                   </div>
@@ -323,11 +366,12 @@ export default function Configuration() {
               <label className="pixel-font font-bold block mb-2">
                 Working Directory
               </label>
-              <Input
-                value={appWorkingFolder}
-                onChange={(e) => setAppWorkingFolder(e.target.value)}
-                placeholder="/path/to/application/folder"
-              />
+                <Input
+                  value={appWorkingFolder}
+                  onChange={(e) => setAppWorkingFolder(e.target.value)}
+                  placeholder="/path/to/application/folder"
+                  className="w-full"
+                />
             </div>
 
             <div>

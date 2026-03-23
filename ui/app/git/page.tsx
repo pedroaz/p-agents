@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/pixelact-ui/button";
 import { Spinner } from "@/components/ui/pixelact-ui/spinner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/pixelact-ui/card";
 import { Input } from "@/components/ui/pixelact-ui/input";
-import { useGitStore } from "@/lib/store";
+import { useGitStore, useProjectStore } from "@/lib/store";
 import "@/components/ui/pixelact-ui/styles/styles.css";
 
 export default function Git() {
@@ -32,6 +32,8 @@ export default function Git() {
     handleUpdatePr,
   } = useGitStore();
 
+  const { currentProject } = useProjectStore();
+
   const existingPr = pulls.find(
     (pr) => pr.headRefName === status?.current_branch && pr.state === "open"
   );
@@ -39,6 +41,12 @@ export default function Git() {
   useEffect(() => {
     refreshAll();
   }, [refreshAll]);
+
+  useEffect(() => {
+    if (currentProject) {
+      refreshAll();
+    }
+  }, [currentProject, refreshAll]);
 
   if (loading) {
     return (

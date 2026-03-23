@@ -5,9 +5,8 @@ import { Button } from "@/components/ui/pixelact-ui/button";
 import { Spinner } from "@/components/ui/pixelact-ui/spinner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/pixelact-ui/card";
 import { useOpenCodeStore } from "@/lib/store";
+import { useProjectStore } from "@/lib/store";
 import "@/components/ui/pixelact-ui/styles/styles.css";
-
-const OPENCODE_URL = "http://localhost:5557";
 
 export default function OpenCode() {
   const {
@@ -23,6 +22,7 @@ export default function OpenCode() {
     stopServer,
   } = useOpenCodeStore();
 
+  const { currentProject } = useProjectStore();
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
@@ -38,8 +38,12 @@ export default function OpenCode() {
   }, [checkStatus]);
 
   const openInNewWindow = () => {
-    window.open(OPENCODE_URL, "_blank", "noopener,noreferrer");
+    const port = currentProject?.opencode_port || 5557;
+    const url = `http://localhost:${port}`;
+    window.open(url, "_blank", "noopener,noreferrer");
   };
+
+  const port = currentProject?.opencode_port || 5557;
 
   if (loading) {
     return (
@@ -52,6 +56,12 @@ export default function OpenCode() {
   return (
     <div className="flex flex-col items-center p-8 gap-6">
       <span className="pixel-font text-2xl font-bold mb-4">Open Code</span>
+
+      {currentProject && (
+        <div className="pixel-font text-sm text-blue-600 mb-2">
+          Current Project: {currentProject.name}
+        </div>
+      )}
 
       {error && (
         <div className="pixel-font text-sm text-red-600 bg-red-50 p-2 rounded">
@@ -90,7 +100,7 @@ export default function OpenCode() {
 
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Web Server (Port 5557)</CardTitle>
+          <CardTitle>Web Server (Port {port})</CardTitle>
         </CardHeader>
         <CardContent className="p-6">
           <div className="space-y-4">
@@ -108,18 +118,10 @@ export default function OpenCode() {
               </div>
             )}
 
-            {serverStatus?.running && serverStatus?.has_auth && (
-              <div className="flex items-center justify-between">
-                <span className="pixel-font font-bold">Username:</span>
-                <span className="pixel-font">{serverStatus.username}</span>
-              </div>
-            )}
-
-            {serverStatus?.running && serverStatus?.has_auth && (
-              <div className="pixel-font text-xs text-gray-500 mt-2">
-                Login with username &quot;{serverStatus.username}&quot; and your password
-              </div>
-            )}
+            <div className="flex items-center justify-between">
+              <span className="pixel-font font-bold">URL:</span>
+              <span className="pixel-font text-xs">http://localhost:{port}</span>
+            </div>
           </div>
 
           <div className="mt-6 flex flex-col gap-3">

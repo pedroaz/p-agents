@@ -9,11 +9,17 @@ import requests
 from datetime import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 app = Flask(__name__)
 CORS(app)
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+PROJECTS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "projects.json"
+)
 LOGS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 
 if not os.path.exists(LOGS_DIR):
@@ -22,8 +28,95 @@ if not os.path.exists(LOGS_DIR):
 running_processes = {}
 
 OPENCODE_PORT = 5557
+OPENCODE_BASE_PORT = 5557
 OPENCODE_PROCESS = {"pid": None, "proc": None}
 OPENCODE_SERVER_URL = f"http://127.0.0.1:{OPENCODE_PORT}"
+
+opencode_processes = {}
+
+
+def start_opencode_for_project(project):
+    project_id = project.get("id")
+    port = project.get("opencode_port", OPENCODE_BASE_PORT)
+
+    if project_id in opencode_processes:
+        proc_info = opencode_processes[project_id]
+        try:
+            os.kill(proc_info["pid"], 0)
+            return proc_info
+        except OSError:
+            pass
+
+    working_folder = project.get("folder_path", "")
+
+    cmd = f"opencode web --port {port}"
+    proc = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=working_folder if working_folder else None,
+    )
+
+    opencode_processes[project_id] = {
+        "pid": proc.pid,
+        "proc": proc,
+        "port": port,
+        "working_folder": working_folder,
+    }
+
+    return opencode_processes[project_id]
+
+
+def summarize_task_title(description: str, working_dir: str = None) -> str:
+    if not description:
+        return "Untitled Task"
+
+    try:
+        project = get_current_project()
+        if project and project.get("folder_path"):
+            folder = project.get("folder_path")
+        elif working_dir:
+            folder = working_dir
+        else:
+            folder = "/tmp"
+
+        port = project.get("opencode_port", 5557) if project else 5557
+        server_url = f"http://localhost:{port}"
+
+        prompt = f"Summarize in exactly 5 words: {description}"
+
+        result = subprocess.run(
+            [
+                "opencode",
+                "run",
+                "--dir",
+                folder,
+                "--attach",
+                server_url,
+                "--format",
+                "json",
+                prompt,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        output = result.stdout
+        import re
+
+        match = re.search(r'"text":"([^"]*)"', output)
+        if match:
+            title = match.group(1).strip()
+            if title:
+                return title[:60]
+
+        return description[:50] + "..." if len(description) > 50 else description
+    except Exception as e:
+        print(f"Failed to summarize task with opencode: {e}")
+        return description[:50] + "..." if len(description) > 50 else description
 
 
 def load_config():
@@ -39,6 +132,56 @@ def load_config():
 def save_config(config):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
+
+
+def load_projects():
+    if os.path.exists(PROJECTS_FILE):
+        try:
+            with open(PROJECTS_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return {"current_project_id": None, "projects": []}
+    return {"current_project_id": None, "projects": []}
+
+
+def save_projects(projects_data):
+    with open(PROJECTS_FILE, "w") as f:
+        json.dump(projects_data, f, indent=2)
+
+
+def get_current_project():
+    projects_data = load_projects()
+    current_id = projects_data.get("current_project_id")
+    if current_id:
+        for project in projects_data.get("projects", []):
+            if project.get("id") == current_id:
+                return project
+    return None
+
+
+def migrate_config_to_project():
+    projects_data = load_projects()
+    if projects_data.get("projects"):
+        return
+    saved_config = load_config()
+    default_project = {
+        "id": "default",
+        "name": "Default Project",
+        "folder_path": saved_config.get("opencode_working_folder", ""),
+        "jira_board_id": "",
+        "opencode_port": OPENCODE_BASE_PORT,
+        "created_at": datetime.now().isoformat(),
+        "application": saved_config.get(
+            "application",
+            {
+                "start_commands": [],
+                "kill_command": "",
+                "ui_url": "",
+            },
+        ),
+    }
+    projects_data = {"current_project_id": "default", "projects": [default_project]}
+    save_projects(projects_data)
 
 
 def check_opencode():
@@ -87,6 +230,32 @@ def check_env_file():
     return {"exists": os.path.isfile(env_path)}
 
 
+@app.route("/utils/resolve-path", methods=["POST"])
+def resolve_path():
+    data = request.get_json()
+    if not data or "folder_name" not in data:
+        return jsonify({"error": "folder_name is required"}), 400
+
+    folder_name = data["folder_name"]
+    try:
+        result = subprocess.run(
+            ["realpath", folder_name]
+            if folder_name.startswith("/")
+            else ["realpath", folder_name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            shell=False,
+        )
+        if result.returncode == 0:
+            return jsonify({"path": result.stdout.strip()})
+        return jsonify(
+            {"error": result.stderr.strip() or "Could not resolve path"}
+        ), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/")
 def hello():
     return {"message": "Hello, World!"}
@@ -94,18 +263,171 @@ def hello():
 
 @app.route("/configuration")
 def get_configuration():
+    migrate_config_to_project()
     saved_config = load_config()
+    current_project = get_current_project()
     config = {
         "opencode": check_opencode(),
         "docker": check_docker(),
         "jira_api_key": check_jira_api_key(),
         "jira_token": check_jira_token(),
         "env_file": check_env_file(),
-        "opencode_working_folder": saved_config.get("opencode_working_folder", ""),
-        "opencode_username": saved_config.get("opencode_username", "opencode"),
-        "opencode_password": saved_config.get("opencode_password", ""),
+        "opencode_working_folder": current_project.get("folder_path", "")
+        if current_project
+        else saved_config.get("opencode_working_folder", ""),
+        "current_project": current_project,
     }
     return jsonify(config)
+
+
+@app.route("/projects", methods=["GET"])
+def get_projects():
+    migrate_config_to_project()
+    projects_data = load_projects()
+    return jsonify(projects_data)
+
+
+@app.route("/projects", methods=["POST"])
+def create_project():
+    migrate_config_to_project()
+    data = request.get_json()
+    if not data or "name" not in data:
+        return jsonify({"error": "name is required"}), 400
+
+    projects_data = load_projects()
+    project_id = f"proj_{int(datetime.now().timestamp() * 1000)}"
+
+    used_ports = {
+        p.get("opencode_port")
+        for p in projects_data.get("projects", [])
+        if p.get("opencode_port")
+    }
+    opencode_port = OPENCODE_BASE_PORT + len(projects_data.get("projects", [])) + 1
+    while opencode_port in used_ports:
+        opencode_port += 1
+
+    new_project = {
+        "id": project_id,
+        "name": data["name"],
+        "folder_path": data.get("folder_path", ""),
+        "jira_board_id": data.get("jira_board_id", ""),
+        "opencode_port": opencode_port,
+        "created_at": datetime.now().isoformat(),
+        "application": data.get(
+            "application",
+            {
+                "start_commands": [],
+                "kill_command": "",
+                "ui_url": "",
+            },
+        ),
+    }
+
+    projects_data["projects"].append(new_project)
+    if not projects_data.get("current_project_id"):
+        projects_data["current_project_id"] = project_id
+
+    save_projects(projects_data)
+
+    return jsonify({"success": True, "project": new_project})
+
+
+@app.route("/projects/<project_id>", methods=["GET"])
+def get_project(project_id):
+    projects_data = load_projects()
+    for project in projects_data.get("projects", []):
+        if project.get("id") == project_id:
+            return jsonify(project)
+    return jsonify({"error": "Project not found"}), 404
+
+
+@app.route("/projects/<project_id>", methods=["PUT"])
+def update_project(project_id):
+    projects_data = load_projects()
+    for i, project in enumerate(projects_data.get("projects", [])):
+        if project.get("id") == project_id:
+            data = request.get_json()
+            if not data:
+                return jsonify({"error": "Request body is required"}), 400
+
+            projects_data["projects"][i].update(
+                {
+                    "name": data.get("name", project["name"]),
+                    "folder_path": data.get(
+                        "folder_path", project.get("folder_path", "")
+                    ),
+                    "jira_board_id": data.get(
+                        "jira_board_id", project.get("jira_board_id", "")
+                    ),
+                    "application": data.get(
+                        "application", project.get("application", {})
+                    ),
+                }
+            )
+            save_projects(projects_data)
+            return jsonify({"success": True, "project": projects_data["projects"][i]})
+    return jsonify({"error": "Project not found"}), 404
+
+
+@app.route("/projects/<project_id>", methods=["DELETE"])
+def delete_project(project_id):
+    projects_data = load_projects()
+    original_count = len(projects_data.get("projects", []))
+    projects_data["projects"] = [
+        p for p in projects_data.get("projects", []) if p.get("id") != project_id
+    ]
+
+    if len(projects_data["projects"]) == original_count:
+        return jsonify({"error": "Project not found"}), 404
+
+    if projects_data.get("current_project_id") == project_id:
+        projects_data["current_project_id"] = (
+            projects_data["projects"][0]["id"] if projects_data["projects"] else None
+        )
+
+    save_projects(projects_data)
+    return jsonify({"success": True})
+
+
+@app.route("/projects/current", methods=["GET"])
+def get_current_project_route():
+    migrate_config_to_project()
+    current = get_current_project()
+    if current:
+        return jsonify(current)
+    return jsonify({"error": "No project selected"}), 404
+
+
+@app.route("/projects/current", methods=["POST"])
+def set_current_project_route():
+    migrate_config_to_project()
+    data = request.get_json()
+    if not data or "project_id" not in data:
+        return jsonify({"error": "project_id is required"}), 400
+
+    projects_data = load_projects()
+    project = None
+    for p in projects_data.get("projects", []):
+        if p.get("id") == data["project_id"]:
+            project = p
+            break
+
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+
+    projects_data["current_project_id"] = data["project_id"]
+    save_projects(projects_data)
+
+    proc_info = start_opencode_for_project(project)
+
+    return jsonify(
+        {
+            "success": True,
+            "current_project_id": data["project_id"],
+            "working_dir": proc_info.get("working_folder"),
+            "port": proc_info.get("port"),
+        }
+    )
 
 
 @app.route("/configuration/opencode", methods=["POST"])
@@ -114,20 +436,33 @@ def update_opencode_config():
     if not data:
         return jsonify({"error": "Request body is required"}), 400
 
-    saved_config = load_config()
     if "working_folder" in data:
-        saved_config["opencode_working_folder"] = data["working_folder"]
-    if "username" in data:
-        saved_config["opencode_username"] = data["username"]
-    if "password" in data:
-        saved_config["opencode_password"] = data["password"]
-    save_config(saved_config)
+        projects_data = load_projects()
+        current_id = projects_data.get("current_project_id")
+        if current_id:
+            for i, project in enumerate(projects_data.get("projects", [])):
+                if project.get("id") == current_id:
+                    projects_data["projects"][i]["folder_path"] = data["working_folder"]
+                    save_projects(projects_data)
+                    break
 
     return jsonify({"success": True})
 
 
 @app.route("/application")
 def get_application_config():
+    migrate_config_to_project()
+    current_project = get_current_project()
+    if current_project:
+        app_config = current_project.get("application", {})
+        return jsonify(
+            {
+                "start_commands": app_config.get("start_commands", []),
+                "kill_command": app_config.get("kill_command", ""),
+                "ui_url": app_config.get("ui_url", ""),
+                "working_folder": current_project.get("folder_path", ""),
+            }
+        )
     saved_config = load_config()
     app_config = saved_config.get("application", {})
     return jsonify(
@@ -142,9 +477,26 @@ def get_application_config():
 
 @app.route("/application", methods=["POST"])
 def save_application_config():
+    migrate_config_to_project()
     data = request.get_json()
     if not data:
         return jsonify({"error": "Request body is required"}), 400
+
+    projects_data = load_projects()
+    current_id = projects_data.get("current_project_id")
+
+    if current_id:
+        for i, project in enumerate(projects_data.get("projects", [])):
+            if project.get("id") == current_id:
+                projects_data["projects"][i]["application"] = {
+                    "start_commands": data.get("start_commands", []),
+                    "kill_command": data.get("kill_command", ""),
+                    "ui_url": data.get("ui_url", ""),
+                }
+                if data.get("working_folder"):
+                    projects_data["projects"][i]["folder_path"] = data["working_folder"]
+                save_projects(projects_data)
+                return jsonify({"success": True})
 
     saved_config = load_config()
     saved_config["application"] = {
@@ -162,10 +514,18 @@ def save_application_config():
 def start_application():
     global running_processes
 
-    saved_config = load_config()
-    app_config = saved_config.get("application", {})
-    start_commands = app_config.get("start_commands", [])
-    working_folder = app_config.get("working_folder", "")
+    migrate_config_to_project()
+    current_project = get_current_project()
+
+    if current_project:
+        app_config = current_project.get("application", {})
+        start_commands = app_config.get("start_commands", [])
+        working_folder = current_project.get("folder_path", "")
+    else:
+        saved_config = load_config()
+        app_config = saved_config.get("application", {})
+        start_commands = app_config.get("start_commands", [])
+        working_folder = app_config.get("working_folder", "")
 
     if not start_commands or all(c == "" for c in start_commands):
         return jsonify({"error": "No start commands configured"}), 400
@@ -293,10 +653,18 @@ def get_logs(session_id):
 def kill_application():
     global running_processes
 
-    saved_config = load_config()
-    app_config = saved_config.get("application", {})
-    kill_command = app_config.get("kill_command", "")
-    working_folder = app_config.get("working_folder", "")
+    migrate_config_to_project()
+    current_project = get_current_project()
+
+    if current_project:
+        app_config = current_project.get("application", {})
+        kill_command = app_config.get("kill_command", "")
+        working_folder = current_project.get("folder_path", "")
+    else:
+        saved_config = load_config()
+        app_config = saved_config.get("application", {})
+        kill_command = app_config.get("kill_command", "")
+        working_folder = app_config.get("working_folder", "")
 
     killed = []
     errors = []
@@ -352,159 +720,112 @@ def is_port_open(host, port, timeout=1):
 
 @app.route("/opencode/status")
 def opencode_status():
-    global OPENCODE_PROCESS
+    project = get_current_project()
+    if not project:
+        return jsonify(
+            {
+                "running": False,
+                "pid": None,
+                "port": OPENCODE_BASE_PORT,
+                "has_auth": False,
+                "username": "opencode",
+                "error": "No project selected",
+            }
+        )
+
+    project_id = project.get("id")
+    opencode_port = project.get("opencode_port", OPENCODE_BASE_PORT)
 
     running = False
     pid = None
-    has_auth = False
 
-    if OPENCODE_PROCESS["pid"]:
+    if project_id in opencode_processes:
+        proc_info = opencode_processes[project_id]
         try:
-            os.kill(OPENCODE_PROCESS["pid"], 0)
+            os.kill(proc_info["pid"], 0)
             running = True
-            pid = OPENCODE_PROCESS["pid"]
+            pid = proc_info["pid"]
         except OSError:
-            OPENCODE_PROCESS["pid"] = None
-            OPENCODE_PROCESS["proc"] = None
+            del opencode_processes[project_id]
 
     if not running:
-        running = is_port_open("127.0.0.1", OPENCODE_PORT)
-
-    saved_config = load_config()
-    if saved_config.get("opencode_password"):
-        has_auth = True
+        running = is_port_open("127.0.0.1", opencode_port)
 
     return jsonify(
         {
             "running": running,
             "pid": pid,
-            "port": OPENCODE_PORT,
-            "has_auth": has_auth,
-            "username": saved_config.get("opencode_username", "opencode"),
+            "port": opencode_port,
+            "project_id": project_id,
         }
     )
 
 
 @app.route("/opencode/start", methods=["POST"])
 def opencode_start():
-    global OPENCODE_PROCESS
+    project = get_current_project()
+    if not project:
+        return jsonify(
+            {"error": "No project selected. Cannot start OpenCode server."}
+        ), 400
 
-    if OPENCODE_PROCESS["pid"]:
-        try:
-            os.kill(OPENCODE_PROCESS["pid"], 0)
-            return jsonify(
-                {
-                    "error": "OpenCode server is already running",
-                    "pid": OPENCODE_PROCESS["pid"],
-                }
-            ), 400
-        except OSError:
-            OPENCODE_PROCESS["pid"] = None
-            OPENCODE_PROCESS["proc"] = None
-
-    saved_config = load_config()
-    working_folder = saved_config.get("opencode_working_folder", "")
-    username = saved_config.get("opencode_username", "opencode")
-    password = saved_config.get("opencode_password", "")
-
-    env = os.environ.copy()
-    if password:
-        env["OPENCODE_SERVER_PASSWORD"] = password
-        env["OPENCODE_SERVER_USERNAME"] = username
-
-    cmd = f"opencode web --port {OPENCODE_PORT}"
-    proc = subprocess.Popen(
-        cmd,
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=working_folder if working_folder else None,
-        env=env,
-    )
-
-    OPENCODE_PROCESS["pid"] = proc.pid
-    OPENCODE_PROCESS["proc"] = proc
+    proc_info = start_opencode_for_project(project)
 
     return jsonify(
         {
             "success": True,
-            "pid": proc.pid,
-            "port": OPENCODE_PORT,
-            "auth": bool(password),
+            "pid": proc_info["pid"],
+            "port": proc_info["port"],
+            "project_id": project.get("id"),
         }
     )
 
 
 @app.route("/opencode/stop", methods=["POST"])
 def opencode_stop():
-    global OPENCODE_PROCESS
+    project = get_current_project()
+    if not project:
+        return jsonify({"error": "No project selected"}), 400
 
-    if not OPENCODE_PROCESS["pid"]:
-        return jsonify({"error": "OpenCode server is not running"}), 400
+    port = project.get("opencode_port", OPENCODE_BASE_PORT)
 
     try:
-        os.kill(OPENCODE_PROCESS["pid"], 9)
-        OPENCODE_PROCESS["pid"] = None
-        OPENCODE_PROCESS["proc"] = None
-        return jsonify({"success": True})
-    except OSError as e:
+        result = subprocess.run(
+            f"lsof -ti :{port} | xargs kill -9 2>/dev/null || true",
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if project.get("id") in opencode_processes:
+            del opencode_processes[project.get("id")]
+
+        return jsonify({"success": True, "port": port})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/opencode/restart", methods=["POST"])
 def opencode_restart():
-    global OPENCODE_PROCESS
+    project = get_current_project()
+    if not project:
+        return jsonify({"error": "No project selected"}), 400
 
-    if OPENCODE_PROCESS["pid"]:
-        try:
-            os.kill(OPENCODE_PROCESS["pid"], 9)
-        except OSError:
-            pass
-
-    OPENCODE_PROCESS["pid"] = None
-    OPENCODE_PROCESS["proc"] = None
-
-    saved_config = load_config()
-    working_folder = saved_config.get("opencode_working_folder", "")
-    username = saved_config.get("opencode_username", "opencode")
-    password = saved_config.get("opencode_password", "")
-
-    env = os.environ.copy()
-    if password:
-        env["OPENCODE_SERVER_PASSWORD"] = password
-        env["OPENCODE_SERVER_USERNAME"] = username
-
-    cmd = f"opencode web --port {OPENCODE_PORT}"
-    proc = subprocess.Popen(
-        cmd,
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=working_folder if working_folder else None,
-        env=env,
-    )
-
-    OPENCODE_PROCESS["pid"] = proc.pid
-    OPENCODE_PROCESS["proc"] = proc
+    proc_info = start_opencode_for_project(project)
 
     return jsonify(
         {
             "success": True,
-            "pid": proc.pid,
-            "port": OPENCODE_PORT,
-            "auth": bool(password),
+            "pid": proc_info["pid"],
+            "port": proc_info["port"],
+            "project_id": project.get("id"),
         }
     )
 
 
 def get_opencode_auth():
-    saved_config = load_config()
-    username = saved_config.get("opencode_username", "opencode")
-    password = saved_config.get("opencode_password", "")
-    if password:
-        return (username, password)
     return None
 
 
@@ -517,9 +838,10 @@ def format_model(model_str):
     return {"providerID": "minimax", "modelID": model_str}
 
 
-def build_session_url(session_id, working_dir=None):
+def build_session_url(session_id, working_dir=None, port=None):
     if not session_id:
         return None
+    port = port or OPENCODE_BASE_PORT
     if working_dir:
         encoded_path = (
             base64.b64encode(working_dir.encode())
@@ -528,8 +850,8 @@ def build_session_url(session_id, working_dir=None):
             .replace("/", "_")
             .rstrip("=")
         )
-        return f"http://127.0.0.1:{OPENCODE_PORT}/{encoded_path}/session/{session_id}"
-    return f"http://127.0.0.1:{OPENCODE_PORT}/session/{session_id}"
+        return f"http://127.0.0.1:{port}/{encoded_path}/session/{session_id}"
+    return f"http://127.0.0.1:{port}/session/{session_id}"
 
 
 @app.route("/opencode/health")
@@ -693,9 +1015,11 @@ def create_task():
 
     tasks = load_tasks()
     task_id = str(int(datetime.now().timestamp() * 1000))
+    task_title = summarize_task_title(data["description"])
 
     new_task = {
         "id": task_id,
+        "title": task_title,
         "description": data["description"],
         "agent": data.get("agent", ""),
         "source": data.get("source", "manual"),
@@ -848,27 +1172,39 @@ def execute_task(task_id):
 
 def execute_task_via_api(task_id, task, saved_config):
     description = task.get("description", "")
+    title = task.get("title", description[:50])
     agent = task.get("agent", "")
     model_str = saved_config.get("opencode_model", "minimax/MiniMax-M2.7-highspeed")
-    working_dir = saved_config.get("opencode_working_folder", "")
+
+    project = get_current_project()
+    if not project:
+        return jsonify({"error": "No project selected"}), 400
+
+    working_dir = project.get("folder_path", "")
+    project_name = project.get("name", "Unknown Project")
+    opencode_port = project.get("opencode_port", OPENCODE_BASE_PORT)
+    opencode_server_url = f"http://127.0.0.1:{opencode_port}"
 
     if not description:
         return jsonify({"error": "Task has no description"}), 400
+
+    start_opencode_for_project(project)
 
     opencode_session_id = None
     try:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         session_id = f"task_{task_id}_{timestamp}"
+        session_title = f"[{project_name}] {title}"
         log_file = os.path.join(LOGS_DIR, f"{session_id}.log")
 
         auth = get_opencode_auth()
         headers = {"Content-Type": "application/json"}
 
         create_response = requests.post(
-            f"{OPENCODE_SERVER_URL}/session",
+            f"{opencode_server_url}/session",
             auth=auth if auth else None,
             headers=headers,
-            json={"title": session_id},
+            json={"title": session_title},
             timeout=10,
         )
 
@@ -895,7 +1231,7 @@ def execute_task_via_api(task_id, task, saved_config):
             message_body["model"] = format_model(model_str)
 
         send_response = requests.post(
-            f"{OPENCODE_SERVER_URL}/session/{opencode_session_id}/prompt_async",
+            f"{opencode_server_url}/session/{opencode_session_id}/prompt_async",
             auth=auth if auth else None,
             headers=headers,
             json=message_body,
@@ -912,6 +1248,8 @@ def execute_task_via_api(task_id, task, saved_config):
 
         with open(log_file, "w") as f:
             f.write(f"[{datetime.now().isoformat()}] Session: {opencode_session_id}\n")
+            f.write(f"[{datetime.now().isoformat()}] Project: {project_name}\n")
+            f.write(f"[{datetime.now().isoformat()}] Working Dir: {working_dir}\n")
             f.write(f"[{datetime.now().isoformat()}] Description: {description}\n")
             f.write(f"[{datetime.now().isoformat()}] Agent: {agent or 'default'}\n")
             f.write(f"[{datetime.now().isoformat()}] Model: {model_str}\n")
@@ -925,6 +1263,9 @@ def execute_task_via_api(task_id, task, saved_config):
         for t in tasks:
             if t["id"] == task_id:
                 t["session_id"] = opencode_session_id
+                t["project_name"] = project_name
+                t["working_dir"] = working_dir
+                t["opencode_port"] = opencode_port
                 break
         save_tasks(tasks)
 
@@ -933,11 +1274,12 @@ def execute_task_via_api(task_id, task, saved_config):
                 {"error": "Failed to send message", "details": send_response.text}
             ), send_response.status_code
 
+        session_url = build_session_url(opencode_session_id, working_dir, opencode_port)
         return jsonify(
             {
                 "success": True,
                 "session_id": opencode_session_id,
-                "session_url": build_session_url(opencode_session_id, working_dir),
+                "session_url": session_url,
                 "log_file": log_file,
             }
         )
@@ -978,16 +1320,16 @@ def get_task_status(task_id):
 
     session_id = task.get("session_id")
     status = task.get("status", "Working")
-
-    saved_config = load_config()
-    working_dir = saved_config.get("opencode_working_folder", "")
+    working_dir = task.get("working_dir", "")
+    opencode_port = task.get("opencode_port", OPENCODE_BASE_PORT)
 
     session_info = None
+    session_url = None
     if session_id:
+        session_url = build_session_url(session_id, working_dir, opencode_port)
         try:
-            auth = get_opencode_auth()
             response = requests.get(
-                f"{OPENCODE_SERVER_URL}/session/{session_id}",
+                f"http://127.0.0.1:{opencode_port}/session/{session_id}",
                 auth=auth if auth else None,
                 timeout=5,
             )
@@ -1001,9 +1343,7 @@ def get_task_status(task_id):
             "task_id": task_id,
             "status": status,
             "session_id": session_id,
-            "session_url": build_session_url(session_id, working_dir)
-            if session_id
-            else None,
+            "session_url": session_url,
             "session_info": session_info,
         }
     )
@@ -1033,8 +1373,14 @@ def update_task_status(task_id):
 
 
 def get_working_dir():
-    saved_config = load_config()
-    working_dir = saved_config.get("opencode_working_folder", "")
+    migrate_config_to_project()
+    current_project = get_current_project()
+    if current_project and current_project.get("folder_path"):
+        working_dir = current_project.get("folder_path", "")
+    else:
+        saved_config = load_config()
+        working_dir = saved_config.get("opencode_working_folder", "")
+
     if not working_dir or not os.path.exists(working_dir):
         return None
     git_check = subprocess.run(

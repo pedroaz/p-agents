@@ -1,0 +1,36 @@
+{
+  "current_project_id": "proj_1774266279417",
+  "projects": [
+    {
+      "id": "default",
+      "name": "Sample Project",
+      "folder_path": "/Users/pedroazevedo/Desktop/dev/pedro-sample-app",
+      "jira_board_id": "",
+      "opencode_port": 5557,
+      "created_at": "2026-03-23T07:58:12.779304",
+      "application": {
+        "start_commands": [
+          "make start"
+        ],
+        "kill_command": "make stop",
+        "ui_url": "http://localhost:3000/",
+        "working_folder": "/Users/pedroazevedo/Desktop/dev/pedro-sample-app"
+      }
+    },
+    {
+      "id": "proj_1774266279417",
+      "name": "Avolta",
+      "folder_path": "/Users/pedroazevedo/Desktop/dev/avolta-website",
+      "jira_board_id": "",
+      "opencode_port": 5558,
+      "created_at": "2026-03-23T12:44:39.417951",
+      "application": {
+        "start_commands": [
+          "pnpm start"
+        ],
+        "kill_command": "",
+        "ui_url": ""
+      }
+    }
+  ]
+}
