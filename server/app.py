@@ -1397,8 +1397,15 @@ def get_working_dir():
 
 def run_git_command(cmd, cwd=None):
     try:
+        env = os.environ.copy()
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=cwd
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=cwd,
+            env=env,
         )
         return {
             "success": result.returncode == 0,
@@ -1411,8 +1418,9 @@ def run_git_command(cmd, cwd=None):
 
 def run_git_command_list(cmd_list, cwd=None):
     try:
+        env = os.environ.copy()
         result = subprocess.run(
-            cmd_list, capture_output=True, text=True, timeout=30, cwd=cwd
+            cmd_list, capture_output=True, text=True, timeout=30, cwd=cwd, env=env
         )
         return {
             "success": result.returncode == 0,

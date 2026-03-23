@@ -1,6 +1,10 @@
 # Config
 server/config.json
 
+# Data files
+server/projects.json
+server/tasks.json
+
 # Python
 __pycache__/
 *.py[cod]
