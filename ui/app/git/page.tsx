@@ -1,201 +1,44 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect } from "react";
 import { Button } from "@/components/ui/pixelact-ui/button";
 import { Spinner } from "@/components/ui/pixelact-ui/spinner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/pixelact-ui/card";
 import { Input } from "@/components/ui/pixelact-ui/input";
-
-interface GitStatus {
-  working_dir: string;
-  current_branch: string;
-  uncommitted_files: number;
-  has_changes: boolean;
-}
-
-interface PullRequest {
-  number: number;
-  title: string;
-  state: string;
-  url: string;
-  headRefName: string;
-}
-
-const API_BASE = "http://localhost:5556";
+import { useGitStore } from "@/lib/store";
+import "@/components/ui/pixelact-ui/styles/styles.css";
 
 export default function Git() {
-  const [status, setStatus] = useState<GitStatus | null>(null);
-  const [pulls, setPulls] = useState<PullRequest[]>([]);
-  const [branches, setBranches] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const [switchBranch, setSwitchBranch] = useState("");
-  const [newBranchName, setNewBranchName] = useState("");
-  const [createPrTitle, setCreatePrTitle] = useState("");
-  const [createPrBody, setCreatePrBody] = useState("");
-
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-  const [prSuccess, setPrSuccess] = useState<string | null>(null);
+  const {
+    status,
+    pulls,
+    branches,
+    loading,
+    error,
+    switchBranch,
+    newBranchName,
+    createPrTitle,
+    createPrBody,
+    actionLoading,
+    prSuccess,
+    setSwitchBranch,
+    setNewBranchName,
+    setCreatePrTitle,
+    setCreatePrBody,
+    refreshAll,
+    handleSwitchBranch,
+    handleCreateBranch,
+    handleCreatePr,
+    handleUpdatePr,
+  } = useGitStore();
 
   const existingPr = pulls.find(
     (pr) => pr.headRefName === status?.current_branch && pr.state === "open"
   );
 
-  const fetchStatus = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/git/status`);
-      if (response.ok) {
-        const data = await response.json();
-        setStatus(data);
-      } else {
-        const data = await response.json();
-        setError(data.error || "Failed to fetch git status");
-      }
-    } catch {
-      setError("Failed to connect to server");
-    }
-  };
-
-  const fetchPulls = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/git/pulls`);
-      if (response.ok) {
-        const data = await response.json();
-        setPulls(data.pulls || []);
-      }
-    } catch {
-      // Silently fail
-    }
-  };
-
-  const fetchBranches = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/git/branches`);
-      if (response.ok) {
-        const data = await response.json();
-        setBranches(data.branches || []);
-      }
-    } catch {
-      // Silently fail
-    }
-  };
-
-  const refreshAll = async () => {
-    setLoading(true);
-    setError(null);
-    await fetchStatus();
-    await fetchPulls();
-    await fetchBranches();
-    setLoading(false);
-  };
-
   useEffect(() => {
     refreshAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const handleSwitchBranch = async () => {
-    if (!switchBranch) return;
-    setActionLoading("switch");
-    setError(null);
-    setSuccess(null);
-    try {
-      const response = await fetch(`${API_BASE}/git/switch-branch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ branch: switchBranch }),
-      });
-      if (response.ok) {
-        setSwitchBranch("");
-        await refreshAll();
-      } else {
-        const data = await response.json();
-        setError(data.error || "Failed to switch branch");
-      }
-    } catch {
-      setError("Failed to switch branch");
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const handleCreateBranch = async () => {
-    if (!newBranchName) return;
-    setActionLoading("create-branch");
-    setError(null);
-    setSuccess(null);
-    try {
-      const response = await fetch(`${API_BASE}/git/create-branch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newBranchName }),
-      });
-      if (response.ok) {
-        setNewBranchName("");
-        await refreshAll();
-      } else {
-        const data = await response.json();
-        setError(data.error || "Failed to create branch");
-      }
-    } catch {
-      setError("Failed to create branch");
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const handleCreatePr = async () => {
-    if (!createPrTitle) return;
-    setActionLoading("create-pr");
-    setError(null);
-    setSuccess(null);
-    setPrSuccess(null);
-    try {
-      const response = await fetch(`${API_BASE}/git/create-pull`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: createPrTitle, body: createPrBody }),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setCreatePrTitle("");
-        setCreatePrBody("");
-        setPrSuccess(data.url);
-        await fetchPulls();
-      } else {
-        const data = await response.json();
-        setError(data.error || "Failed to create PR");
-      }
-    } catch {
-      setError("Failed to create PR");
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const handleUpdatePr = async () => {
-    setActionLoading("update-pr");
-    setError(null);
-    setSuccess(null);
-    setPrSuccess(null);
-    try {
-      const response = await fetch(`${API_BASE}/git/push`, {
-        method: "POST",
-      });
-      if (response.ok) {
-        setPrSuccess("Branch pushed successfully");
-      } else {
-        const data = await response.json();
-        setError(data.error || "Failed to push");
-      }
-    } catch {
-      setError("Failed to push");
-    } finally {
-      setActionLoading(null);
-    }
-  };
+  }, [refreshAll]);
 
   if (loading) {
     return (
@@ -212,12 +55,6 @@ export default function Git() {
       {error && (
         <div className="pixel-font text-sm text-red-600 bg-red-50 p-2 rounded">
           {error}
-        </div>
-      )}
-
-      {success && (
-        <div className="pixel-font text-sm text-green-600 bg-green-50 p-2 rounded">
-          {success}
         </div>
       )}
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/pixelact-ui/button";
 import {
   Card,
@@ -12,56 +12,29 @@ import {
 import { Spinner } from "@/components/ui/pixelact-ui/spinner";
 import { cn } from "@/lib/utils";
 import { useConfiguration } from "@/lib/configuration-context";
+import { useApplicationStore } from "@/lib/store";
 import "@/components/ui/pixelact-ui/styles/styles.css";
-
-interface Process {
-  id: string;
-  pid: number;
-  command: string;
-  log_file: string;
-  started_at: string;
-  running: boolean;
-}
-
-const API_BASE = "http://localhost:5556";
 
 export default function Application() {
   const { configuration } = useConfiguration();
-  const [starting, setStarting] = useState(false);
-  const [killing, setKilling] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-  const [statusType, setStatusType] = useState<"success" | "error" | null>(null);
-  const [processes, setProcesses] = useState<Process[]>([]);
-  const [logs, setLogs] = useState<string>("");
-  const [selectedSession, setSelectedSession] = useState<string | null>(null);
-  const [fetchingLogs, setFetchingLogs] = useState(false);
+  const {
+    starting,
+    killing,
+    status,
+    statusType,
+    processes,
+    logs,
+    selectedSession,
+    fetchingLogs,
+    fetchProcesses,
+    fetchLogs,
+    startApplication,
+    killApplication,
+    setSelectedSession,
+  } = useApplicationStore();
+
   const logsEndRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  const fetchProcesses = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_BASE}/application/processes`);
-      if (response.ok) {
-        const data = await response.json();
-        setProcesses(data.processes);
-      }
-    } catch {
-    }
-  }, []);
-
-  const fetchLogs = useCallback(async (sessionId: string) => {
-    setFetchingLogs(true);
-    try {
-      const response = await fetch(`${API_BASE}/application/logs/${sessionId}`);
-      if (response.ok) {
-        const data = await response.json();
-        setLogs(data.logs || "");
-      }
-    } catch {
-    } finally {
-      setFetchingLogs(false);
-    }
-  }, []);
 
   useEffect(() => {
     fetchProcesses();
@@ -91,64 +64,6 @@ export default function Application() {
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
-
-  const showStatus = (message: string, type: "success" | "error") => {
-    setStatus(message);
-    setStatusType(type);
-    setTimeout(() => {
-      setStatus(null);
-      setStatusType(null);
-    }, 3000);
-  };
-
-  const startApplication = async () => {
-    setStarting(true);
-    setStatus(null);
-    try {
-      const response = await fetch(`${API_BASE}/application/start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-      if (response.ok) {
-        const data = await response.json();
-        showStatus("Application started!", "success");
-        fetchProcesses();
-        if (data.session_id) {
-          setSelectedSession(data.session_id);
-        }
-      } else {
-        const error = await response.json();
-        showStatus(error.error || "Failed to start application", "error");
-      }
-    } catch {
-      showStatus("Failed to start application", "error");
-    } finally {
-      setStarting(false);
-    }
-  };
-
-  const killApplication = async () => {
-    setKilling(true);
-    setStatus(null);
-    try {
-      const response = await fetch(`${API_BASE}/application/kill`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-      if (response.ok) {
-        showStatus("Application killed!", "success");
-        fetchProcesses();
-        setLogs("");
-        setSelectedSession(null);
-      } else {
-        showStatus("Failed to kill application", "error");
-      }
-    } catch {
-      showStatus("Failed to kill application", "error");
-    } finally {
-      setKilling(false);
-    }
-  };
 
   const appConfig = configuration?.application;
   const uiUrl = appConfig?.ui_url || "";

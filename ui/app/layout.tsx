@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Navigation } from "@/components/navigation";
 import { ConfigurationProvider } from "@/lib/configuration-context";
+import { ToastContainer } from "@/components/toast";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -31,6 +32,7 @@ export default function RootLayout({
         <main className="flex-1">
           <ConfigurationProvider>{children}</ConfigurationProvider>
         </main>
+        <ToastContainer />
       </body>
     </html>
   );

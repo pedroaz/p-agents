@@ -1,66 +1,29 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/pixelact-ui/button";
 import { Spinner } from "@/components/ui/pixelact-ui/spinner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/pixelact-ui/card";
+import { useOpenCodeStore } from "@/lib/store";
+import "@/components/ui/pixelact-ui/styles/styles.css";
 
-interface ServerStatus {
-  running: boolean;
-  pid: number | null;
-  port: number;
-  has_auth: boolean;
-  username: string;
-}
-
-interface CliStatus {
-  available: boolean;
-  version: string | null;
-}
-
-const API_BASE = "http://localhost:5556";
 const OPENCODE_URL = "http://localhost:5557";
 
 export default function OpenCode() {
-  const [cliStatus, setCliStatus] = useState<CliStatus | null>(null);
-  const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [checking, setChecking] = useState(false);
-  const [starting, setStarting] = useState(false);
-  const [stopping, setStopping] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    cliStatus,
+    serverStatus,
+    loading,
+    checking,
+    starting,
+    stopping,
+    error,
+    checkStatus,
+    startServer,
+    stopServer,
+  } = useOpenCodeStore();
+
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  const checkStatus = async () => {
-    setChecking(true);
-    setError(null);
-    try {
-      const [cliResponse, serverResponse] = await Promise.all([
-        fetch(`${API_BASE}/configuration`),
-        fetch(`${API_BASE}/opencode/status`)
-      ]);
-
-      if (cliResponse.ok) {
-        const data = await cliResponse.json();
-        setCliStatus({
-          available: data.opencode?.available || false,
-          version: data.opencode?.version || null
-        });
-      }
-
-      if (serverResponse.ok) {
-        const serverData = await serverResponse.json();
-        setServerStatus(serverData);
-      }
-    } catch (err) {
-      setError("Failed to check status");
-      setCliStatus({ available: false, version: null });
-      setServerStatus({ running: false, pid: null, port: 5557, has_auth: false, username: "opencode" });
-    } finally {
-      setLoading(false);
-      setChecking(false);
-    }
-  };
 
   useEffect(() => {
     checkStatus();
@@ -72,46 +35,10 @@ export default function OpenCode() {
         clearInterval(intervalRef.current);
       }
     };
-  }, []);
+  }, [checkStatus]);
 
   const openInNewWindow = () => {
     window.open(OPENCODE_URL, "_blank", "noopener,noreferrer");
-  };
-
-  const startServer = async () => {
-    setStarting(true);
-    setError(null);
-    try {
-      const response = await fetch(`${API_BASE}/opencode/start`, { method: "POST" });
-      if (response.ok) {
-        await checkStatus();
-      } else {
-        const data = await response.json();
-        setError(data.error || "Failed to start server");
-      }
-    } catch {
-      setError("Failed to start server");
-    } finally {
-      setStarting(false);
-    }
-  };
-
-  const stopServer = async () => {
-    setStopping(true);
-    setError(null);
-    try {
-      const response = await fetch(`${API_BASE}/opencode/stop`, { method: "POST" });
-      if (response.ok) {
-        await checkStatus();
-      } else {
-        const data = await response.json();
-        setError(data.error || "Failed to stop server");
-      }
-    } catch {
-      setError("Failed to stop server");
-    } finally {
-      setStopping(false);
-    }
   };
 
   if (loading) {
@@ -190,7 +117,7 @@ export default function OpenCode() {
 
             {serverStatus?.running && serverStatus?.has_auth && (
               <div className="pixel-font text-xs text-gray-500 mt-2">
-                Login with username "{serverStatus.username}" and your password
+                Login with username &quot;{serverStatus.username}&quot; and your password
               </div>
             )}
           </div>

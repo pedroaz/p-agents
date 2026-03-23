@@ -1,5 +1,3 @@
-import { Button } from "@/components/ui/pixelact-ui/button";
-
 export default function VSCode() {
   return (
     <div className="flex flex-col items-center justify-center p-8">

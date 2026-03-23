@@ -35,6 +35,8 @@ const DialogTitle = React.forwardRef<
   );
 });
 
+DialogTitle.displayName = "DialogTitle";
+
 const DialogContent = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
@@ -68,6 +70,8 @@ const DialogContent = React.forwardRef<
     </DialogPrimitive.Content>
   </DialogPortal>
 ));
+
+DialogContent.displayName = "DialogContent";
 
 export {
   Dialog,

@@ -10,33 +10,19 @@ import {
   MenubarTrigger,
   MenubarContent,
   MenubarItem,
-  MenubarSeparator,
 } from "@/components/ui/pixelact-ui/menubar";
-
-const API_BASE = "http://localhost:5556";
-
-interface GitStatus {
-  working_dir: string;
-  current_branch: string;
-  uncommitted_files: number;
-  has_changes: boolean;
-}
+import { useGitStore } from "@/lib/store";
 
 export function Navigation() {
   const pathname = usePathname();
-  const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
+  const { status, fetchStatus, handleReset } = useGitStore();
   const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
-    fetch(`${API_BASE}/git/status`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data) setGitStatus(data);
-      })
-      .catch(() => {});
-  }, []);
+    fetchStatus();
+  }, [fetchStatus]);
 
-  const handleReset = async () => {
+  const onReset = async () => {
     if (
       !confirm("Reset branch to main and discard all changes? This cannot be undone.")
     ) {
@@ -44,28 +30,7 @@ export function Navigation() {
     }
     setResetting(true);
     try {
-      const response = await fetch(`${API_BASE}/git/reset`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ discard: true, base: "main" }),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        if (data.success) {
-          setGitStatus((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  current_branch: data.branch,
-                  uncommitted_files: 0,
-                  has_changes: false,
-                }
-              : null
-          );
-        } else {
-          alert("Reset failed: " + (data.errors?.join(", ") || "Unknown error"));
-        }
-      }
+      await handleReset();
     } finally {
       setResetting(false);
     }
@@ -82,23 +47,23 @@ export function Navigation() {
           </Link>
         </div>
 
-        {gitStatus && (
+        {status && (
           <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 pixel-font text-sm">
             <span className="font-bold">Branch:</span>
             <span
               className={
-                gitStatus.has_changes ? "text-orange-600" : "text-green-600"
+                status.has_changes ? "text-orange-600" : "text-green-600"
               }
             >
-              {gitStatus.current_branch}
+              {status.current_branch}
             </span>
-            {gitStatus.uncommitted_files > 0 && (
+            {status.uncommitted_files > 0 && (
               <span className="text-red-600">
-                ({gitStatus.uncommitted_files} uncommitted)
+                ({status.uncommitted_files} uncommitted)
               </span>
             )}
             <Button
-              onClick={handleReset}
+              onClick={onReset}
               disabled={resetting}
               variant="destructive"
               size="sm"
@@ -116,9 +81,6 @@ export function Navigation() {
                 <Link href="/task-management">
                   <MenubarItem>Task Management</MenubarItem>
                 </Link>
-                <Link href="/open-code">
-                  <MenubarItem>Open Code</MenubarItem>
-                </Link>
                 <Link href="/git">
                   <MenubarItem>Git</MenubarItem>
                 </Link>
@@ -131,7 +93,9 @@ export function Navigation() {
             <MenubarMenu>
               <MenubarTrigger>Apps</MenubarTrigger>
               <MenubarContent>
-                
+                <Link href="/open-code">
+                  <MenubarItem>Open Code</MenubarItem>
+                </Link>
                 <Link href="/jira">
                   <MenubarItem>Jira</MenubarItem>
                 </Link>
